@@ -7,13 +7,25 @@ clock={'t':1000.0}; SERVER0=1793600000
 STUB=r'''
 local env=...
 local function noop() end
-local Obj={} ; Obj.__index=function(t,k) if k=='TitleText' then return nil end return rawget(Obj,k) or noop end
+-- Unknown methods are no-ops; fields a template may or may not have (and the addon's own lowercase fields) are nil.
+local NILS={TitleText=true,Instructions=true,ScrollBar=true,Text=true}
+local Obj={} ; Obj.__index=function(t,k)
+  local v=rawget(Obj,k); if v~=nil then return v end
+  if NILS[k] or (type(k)=='string' and k:match('^%l')) then return nil end
+  return noop
+end
+function Obj:Show() rawset(self,'_shown',true) end
+function Obj:Hide() rawset(self,'_shown',false) end
+function Obj:SetShown(v) rawset(self,'_shown',v and true or false) end
+function Obj:IsShown() return rawget(self,'_shown')==true end
+function Obj:GetHeight() return 300 end
+function Obj:SetText(v) rawset(self,'_text',v) end
+function Obj:GetText() return rawget(self,'_text') end
 function Obj:SetScript(name,fn) rawset(self,'_'..name,fn) end
 function Obj:HookScript(name,fn) rawset(self,'_'..name,fn) end
 function Obj:CreateFontString() return setmetatable({},Obj) end
 function Obj:CreateTexture() return setmetatable({},Obj) end
 function Obj:RegisterEvent(e) self._events[e]=true end
-function Obj:IsShown() return false end
 CreateFrame=function() local o=setmetatable({_events={}},Obj); env.frames[#env.frames+1]=o; return o end
 UIParent={}; UISpecialFrames={}; SlashCmdList={}
 GameTooltip=setmetatable({lines={}},Obj); ItemRefTooltip=nil
@@ -281,5 +293,25 @@ slash(gm,'bank remove Spare Change'); bus.run(10)
 check('guild master removes a bank character everywhere', all(managed(c)==['coinpurse'] for c in (m1,m2,officer)))
 slash(m1,'remove Coin Purse')
 check('members cannot drop a GM-set bank character', managed(m1)==['coinpurse'])
+
+# --- window ---
+GBT=lambda c: c.L.globals().GuildBankToons
+purse.setbags([[2592,7],[2589,5]]); purse.fire('BAG_UPDATE_DELAYED'); bus.run(20)
+rows=GBT(m1).itemRows(None,'all','','name')
+cloth=[r for r in rows.values() if r.id==2589]
+check('items on several toons are totalled with each toon listed', cloth and cloth[0].total==50 and len(cloth[0].toons)==2
+      and 'Vault Keeper' in cloth[0].where and 'Coin Purse' in cloth[0].where)
+only=[r for r in GBT(m1).itemRows('coinpurse','all','','name').values() if r.id==2589]
+check('picking one toon shows only its share', only and only[0].total==5)
+check('search filters items', all('2592' in r.name for r in GBT(m1).itemRows(None,'all','item2592','name').values()))
+slash(m1,''); bus.run(1)
+for tab in ('requests','settings','gm','items'):
+    GBT(m1).open(tab); bus.run(1)
+for draw in ('refreshItems','refreshRequests','refreshSettings','refreshGM'):
+    GBT(m1)[draw]()
+GBT(m1).openRequestDialog(cloth[0]); bus.run(1)
+check('the request dialog picks the toon with the most available', GBT(m1).bestToon(2589)=='Vault Keeper')
+GBT(gm).open('gm'); bus.run(1)
+check('every tab draws without errors', True)
 print('messages sent total:',bus.count)
 sys.exit(0 if ok else 1)

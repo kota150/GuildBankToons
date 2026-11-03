@@ -6,16 +6,12 @@ Built for **WoW Forever**, and also works on **Classic Era**.
 
 ## Setting up
 
-1. **Pick the bank character(s).** The guild can have as many as it likes. The easiest way: the **guild master** types, once per bank character:
-   ```
-   /gbt bank add Vault Keeper
-   ```
-   The list goes to every guildmate running the addon and is passed along like the bank contents, so people who log in while the guild master is offline still get it. `/gbt bank remove Vault Keeper` takes one off, `/gbt bank clear` empties the list, and `/gbt bank list` shows it to anyone. Only the guild master (rank 0) can change it, up to 20 bank characters.
+1. **Pick the bank character(s).** The guild can have as many as it likes. The easiest way: the **guild master** opens the window (minimap button or `/gbt`), goes to the **Guild Master** tab, types the bank toon's name and presses **Add bank toon**. The list goes to every guildmate running the addon and is passed along like the bank contents, so people who log in while the guild master is offline still get it. Everyone can see the tab; only the guild master (rank 0) can change it, up to 20 bank toons. (`/gbt bank add|remove|clear|list Name` does the same from chat.)
 
-   Alternatively, an officer can add a tag per bank character to the guild info text (Guild → Guild Information), for example `[GBT:Vault Keeper]`; `/gbt tag` prints it for you. Use the bank character's full name, first name and surname. Case and spaces don't matter, and no realm is needed. Both ways can be used together. Any member can also type `/gbt add Vault Keeper` to follow a bank character just for themselves.
+   Alternatively, an officer can add a tag per bank character to the guild info text (Guild → Guild Information), for example `[GBT:Vault Keeper]`; `/gbt tag` prints it for you. Use the bank character's full name, first name and surname. Case and spaces don't matter, and no realm is needed. Both ways can be used together. Any member can also follow a bank toon just for themselves under **Settings**.
 2. **Log in on the bank character with the addon enabled.** Its bags are read straight away. The bank can only be read while it's open, so **visit the banker once**. After that the bank contents carry over until the next visit.
 3. **Optional: say who the officers are.** By default ranks 0 and 1 (guild master and the rank below) handle requests. To change it, add `[GBT:officers=2]` to the guild info, which makes ranks 0–2 officers.
-4. That's it. Guildmates type `/gbt` to browse.
+4. That's it. Guildmates click the minimap button (or type `/gbt`) to browse.
 
 ## How offline sharing works
 
@@ -29,7 +25,7 @@ Built for **WoW Forever**, and also works on **Classic Era**.
 
 Guildmates ask for items, an approver says yes or no, and the bank character mails what was approved.
 
-1. **Ask.** Ctrl-click an item in the window, enter how many (and a note if you like, e.g. `20 for my alt`), and press Request. `/gbt request [item link] 20 note` does the same from chat.
+1. **Ask.** Click an item on the Bank tab. Pick which toon to ask (each shows how many it has available), enter how many and an optional note, and press **Request**. `/gbt request [item link] 20 note` does the same from chat.
 2. **Approvers are told.** Officers, the guild master and bank characters can approve. The ones running the addon get a chat alert with a sound right away. After a few seconds, the requester's game whispers up to 3 online officers who *didn't* acknowledge it, which are the ones without the addon. If nobody who can approve is online, the request waits, and they see "N waiting for approval" when they log in.
 3. **Approve or deny.** In the window's **Requests** view (or `/gbt approve N`, `/gbt deny N`), press **Approve** or **Deny**. The requester can **Cancel** while it's still waiting.
 4. **Approved items are reserved.** An approved request takes its items off the available counts in the window, tooltips and Discord ("15 (30 reserved)"), so nobody else is promised the same stack. It stays in the list as *approved* until it's mailed. The requester and the bank character are both told, and Discord posts a separate message that can ping whoever mails for the bank.
@@ -41,18 +37,24 @@ Requests sync like the bank contents: everyone keeps a copy, and a guildmate log
 
 ## Features
 
-- **Browse window** (`/gbt`): one button per bank character (with a **More** button to page through when there are more than five), search, All / Bags / Bank filters, gold, and how long ago the snapshot was taken.
-- **Shift-click** an item to link it in chat. **Ctrl-click** to request it.
-- **Available counts**: the All view shows what's left after approved requests, with the reserved amount alongside.
-- **Requests view**: waiting requests first, then approved ones waiting to be mailed, then recently finished ones, with Approve / Deny / Mailed / Cancel buttons for whoever can use them.
+- **One window, four tabs** along the bottom, like the game's character window: **Bank**, **Requests**, **Settings** and **Guild Master**. Open it from the minimap button, the AddOns menu, Options → AddOns, or `/gbt`. Drag the corner to resize it, set its size in Settings, and it remembers where you left it.
+- **Bank tab**: every bank toon down the side with its gold and how fresh its copy is, and every item beside them. With **All bank toons** picked, an item held by several toons shows the total and each toon's share ("45 — Vault Keeper 5 · Coin Purse 40"); pick one toon to see its bags and bank split. Search, All / Bags / Bank, and sort by name, count or quality.
+- **Click** an item to request it, **Shift-click** to link it in chat. Hover for the game's tooltip plus each toon's bags, bank and reserved counts.
+- **Available counts**: what's left after approved requests, with the reserved amount alongside.
+- **Requests tab**: search by item, name or note; Active / Mine / All; Approve / Deny / Mailed / Cancel buttons for whoever can use them.
+- **Settings tab**: every option as a checkbox, window size, toons you follow just for yourself, Sync now, and sync counters.
+- **Guild Master tab**: the guild's bank toons, with Add, Remove and Remove all for the guild master.
 - **Mail helper** at mailboxes on bank characters.
 - **Item tooltips** show "Guild bank (Bankalt): 40" anywhere you hover that item.
 
 ## Commands
 
+Everything below is also in the window; the commands are there if you prefer chat.
+
 | Command | What it does |
 | --- | --- |
 | `/gbt` | Open or close the window |
+| `/gbt settings`, `/gbt gm` | Open the Settings or Guild Master tab |
 | `/gbt sync` | Ask the guild for the latest contents |
 | `/gbt status` | List bank characters, how old each copy is, and message counters |
 | `/gbt bank add First Last` / `bank remove First Last` / `bank clear` | Set the guild's bank characters for everyone (guild master only) |

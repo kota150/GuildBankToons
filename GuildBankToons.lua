@@ -13,16 +13,17 @@ if type(VERSION)~='string' or VERSION:find('@',1,true) then VERSION='dev' end
 VERSION=VERSION:gsub('^v','')
 -- Helper functions live in one table: WoW's Lua allows at most 200 locals at the top of a file.
 local GV={}
+-- Other addons (and the tests) can reach the addon's functions here.
+GuildBankToons=GV
 -- Hidden guild addon-message channel.
 local PREFIX='GBTOONS'
 -- Officers designate bank characters by adding this tag to the guild info text, e.g. [GBT:Vault Keeper].
 local TAG_PATTERN='%[GBT:%s*([^%]]-)%s*%]'
 -- Relayed snapshots stamped further ahead of server time than this are treated as forged.
 local MAX_FUTURE=600
-local ROW_H=20
 local frame=CreateFrame('Frame')
 local window
-local ui, rows = {}, {}
+local ui={}
 local db
 local queue, timers, pending = {}, {}, {}
 local lastSent, lastSentAt = {}, {}
@@ -118,9 +119,12 @@ function GV.initDB()
   db.ownBank=db.ownBank or {}
   db.ui=db.ui or {}
   db.ui.filter=db.ui.filter or 'all'
+  db.ui.reqFilter=db.ui.reqFilter or 'active'
+  db.ui.sort=db.ui.sort or 'name'
   db.settings=db.settings or {}
   if db.settings.tooltips==nil then db.settings.tooltips=true end
   if db.settings.quiet==nil then db.settings.quiet=false end
+  if db.settings.minimap==nil then db.settings.minimap=true end
   -- Whisper online officers who don't run the addon when you make a request.
   if db.settings.whispers==nil then db.settings.whispers=true end
   -- Offer a /reload after request changes so the Discord companion on this PC posts them.
@@ -701,37 +705,16 @@ function GV.onRequestMessage(action,origin,rest,sender)
   end
 end
 if StaticPopupDialogs then
-  StaticPopupDialogs.GUILDBANKTOONS_REQUEST={
-    text='Request %s from %s\n\nHow many? Add a note after the number if you like ("20 for my alt").',
-    button1='Request',button2=CANCEL or 'Cancel',hasEditBox=true,timeout=0,whileDead=true,hideOnEscape=true,
-    OnShow=function(self)
-      local box=self.editBox or self.EditBox
-      if box then box:SetText('1'); box:HighlightText() end
-    end,
-    OnAccept=function(self,data)
-      local box=self.editBox or self.EditBox
-      local text=box and box:GetText() or ''
-      local count=tonumber(text:match('^%s*(%d+)')) or 1
-      GV.createRequest(data.item,count,(text:gsub('^%s*%d*%s*','')),data.bank)
-    end,
-    EditBoxOnEnterPressed=function(self)
-      local popup=self:GetParent()
-      StaticPopupDialogs.GUILDBANKTOONS_REQUEST.OnAccept(popup,popup.data)
-      popup:Hide()
-    end,
-    EditBoxOnEscapePressed=function(self) self:GetParent():Hide() end,
+  StaticPopupDialogs.GUILDBANKTOONS_CLEAR={
+    text='Remove every bank toon you set for the guild?',
+    button1=YES or 'Yes',button2=NO or 'No',timeout=0,whileDead=true,hideOnEscape=true,
+    OnAccept=function() GV.gmChange('clear') end,
   }
   StaticPopupDialogs.GUILDBANKTOONS_RELOAD={
     text='Guild bank requests changed. Reload now so the Discord companion on this PC posts them?',
     button1='Reload',button2='Later',timeout=0,whileDead=true,hideOnEscape=true,
     OnAccept=function() if ReloadUI then ReloadUI() end end,
   }
-end
-function GV.promptRequest(item,bank)
-  if not StaticPopup_Show then return end
-  local name,link=GV.itemInfo(item)
-  local label=(link or name or ('item #'..item))..' ('..GV.available(nameId(bank),item)..' available)'
-  StaticPopup_Show('GUILDBANKTOONS_REQUEST',label,displayName(bank),{item=item,bank=bank})
 end
 
 -- Bank characters set by the guild master ------------------------------------------------------------
@@ -849,13 +832,20 @@ function GV.bankCommand(arg)
   if verb~='add' and verb~='remove' and verb~='clear' then
     log('Usage: /gbt bank add First Last, /gbt bank remove First Last, /gbt bank clear, /gbt bank list.',true); return
   end
+  GV.gmChange(verb,name)
+end
+-- Adds, removes or clears the guild's bank toons; guild master only. Returns true when the list changed.
+function GV.gmChange(verb,name)
+  local g=GV.guild()
+  if not g then log('You must be in a guild.',true); return false end
+  name=name or ''
   GV.readRoster()
   if next(roster)==nil then
     if C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() elseif GuildRoster then GuildRoster() end
-    log('The guild roster hasn\'t loaded yet; try again in a moment.',true); return
+    log('The guild roster hasn\'t loaded yet; try again in a moment.',true); return false
   end
   if not GV.isGM(myId()) then
-    log('Only the guild master can set the guild\'s bank characters. /gbt add Name follows one just for you.',true); return
+    log('Only the guild master can set the guild\'s bank characters. You can follow one just for yourself in Settings.',true); return false
   end
   local set,count={},0
   for id,n in pairs(g.managed) do set[id]=n; count=count+1 end
@@ -864,18 +854,19 @@ function GV.bankCommand(arg)
     set={}
     log('Cleared the guild\'s bank characters.',true)
   elseif not id or name:find('[|,]') then
-    log('Usage: /gbt bank '..verb..' First Last',true); return
+    log('Enter the bank toon\'s full name, First Last.',true); return false
   elseif verb=='add' then
-    if set[id] then log(displayName(name)..' is already a bank character.',true); return end
-    if count>=MAX_MANAGED then log('That\'s the limit of '..MAX_MANAGED..' bank characters.',true); return end
+    if set[id] then log(displayName(name)..' is already a bank character.',true); return false end
+    if count>=MAX_MANAGED then log('That\'s the limit of '..MAX_MANAGED..' bank characters.',true); return false end
     set[id]=baseName(name)
     log('Added '..baseName(name)..' as a guild bank character. Log in on it with the addon and visit the banker once.',true)
   else
-    if not set[id] then log(displayName(name)..' isn\'t one of the guild\'s bank characters.',true); return end
+    if not set[id] then log(displayName(name)..' isn\'t one of the guild\'s bank characters.',true); return false end
     set[id]=nil
     log('Removed '..displayName(name)..' from the guild\'s bank characters.',true)
   end
   GV.setManaged(set)
+  return true
 end
 
 -- Mail helper --------------------------------------------------------------------------------------
@@ -1028,231 +1019,840 @@ function GV.mailOpened()
 end
 
 -- Window ------------------------------------------------------------------------------------------
-local function selectedBank(banks)
-  for _,bank in ipairs(banks) do if bank.id==db.ui.bank then return bank end end
-  local first=banks[1]
-  db.ui.bank=first and first.id
-  return first
-end
-function GV.row(i)
-  if rows[i] then return rows[i] end
-  local r=CreateFrame('Button',nil,ui.content)
-  r:SetSize(400,ROW_H); r:SetPoint('TOPLEFT',0,-(i-1)*ROW_H)
-  r:SetHighlightTexture('Interface\\QuestFrame\\UI-QuestTitleHighlight','ADD')
-  r.icon=r:CreateTexture(nil,'ARTWORK'); r.icon:SetSize(16,16); r.icon:SetPoint('LEFT',2,0)
-  r.name=r:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
-  r.name:SetPoint('LEFT',r.icon,'RIGHT',6,0); r.name:SetWidth(230); r.name:SetJustifyH('LEFT')
-  r.where=r:CreateFontString(nil,'OVERLAY','GameFontDisableSmall'); r.where:SetPoint('RIGHT',-60,0)
-  r.count=r:CreateFontString(nil,'OVERLAY','GameFontNormalSmall'); r.count:SetPoint('RIGHT',-6,0)
-  -- Approve / Deny / Mailed / Cancel in the Requests view, whichever this player may use.
-  r.actions={}
-  for n=1,2 do
-    local b=CreateFrame('Button',nil,r,'UIPanelButtonTemplate')
-    b:SetSize(60,18); b:SetPoint('RIGHT',-2-(2-n)*62,0)
-    b:SetScript('OnClick',function(self) GV.setRequestStatus(r.request,self.status) end)
-    r.actions[n]=b
+-- Game-style tabs under the window: Bank, Requests, Settings and Guild Master. The Bank tab lists the bank
+-- toons down the side and every item beside them, totalled across toons with each toon's share shown.
+-- The window moves, resizes and scales, and remembers all three, so it fits any screen.
+local TABS={{key='items',label='Bank'},{key='requests',label='Requests'},{key='settings',label='Settings'},{key='gm',label='Guild Master'}}
+local ITEM_ROW_H=36
+local SIDEBAR_W=176
+local MUTED,ORANGE,GREEN,YELLOW='|cff8c8c8c','|cffff8040','|cff40ff40','|cffffd100'
+local SORT_ORDER,SORTS={'name','count','quality'},{name='Name',count='Count',quality='Quality'}
+local STATUS_SHORT={open=YELLOW..'Waiting|r',approved=GREEN..'Approved|r',mailed=MUTED..'Mailed|r',denied='|cffff6060Denied|r',cancelled=MUTED..'Cancelled|r'}
+local QUESTION_ICON='Interface\\Icons\\INV_Misc_QuestionMark'
+
+-- Widgets ---------------------------------------------------------------------------------------------
+-- Templates differ between Classic Era and the modern client; take the first one this client has.
+function GV.make(kind,parent,templates,name)
+  for _,template in ipairs(templates or {}) do
+    local ok,f=pcall(CreateFrame,kind,name,parent,template)
+    if ok and f then return f,template end
   end
-  r:SetScript('OnEnter',function(self)
-    GameTooltip:SetOwner(self,'ANCHOR_RIGHT')
-    if GameTooltip.SetItemByID then GameTooltip:SetItemByID(self.id) else GameTooltip:SetHyperlink('item:'..self.id) end
-    local q=self.request
-    if q then
-      GameTooltip:AddLine(' ')
-      GameTooltip:AddLine('Requested by '..displayName(q.by)..' '..ago(tonumber(q.id:match('%-(%d+)%-%d+$')) or q.updated),1,1,1)
-      if (q.note or '')~='' then GameTooltip:AddLine('"'..q.note..'"',1,.82,0,true) end
-      if q.status=='open' then GameTooltip:AddLine(STATUSES.open,.6,.6,.6)
-      else GameTooltip:AddLine(STATUSES[q.status]..' by '..displayName(q.actor or '?'),.6,.6,.6) end
-      if q.status=='mailed' and q.approvedBy then GameTooltip:AddLine('Approved by '..displayName(q.approvedBy),.6,.6,.6) end
-      GameTooltip:AddLine('Shift-click to link.',.6,.6,.6)
-    else
-      GameTooltip:AddLine('Shift-click to link. Ctrl-click to request it.',.6,.6,.6)
+  return CreateFrame(kind,name,parent)
+end
+local function label(parent,font,justify,wrap)
+  local s=parent:CreateFontString(nil,'OVERLAY',font or 'GameFontHighlightSmall')
+  s:SetJustifyH(justify or 'LEFT')
+  if s.SetWordWrap then s:SetWordWrap(wrap and true or false) end
+  return s
+end
+local function button(parent,text,width)
+  local b=GV.make('Button',parent,{'UIPanelButtonTemplate'})
+  b:SetSize(width or 80,22); b:SetText(text)
+  return b
+end
+local function editBox(parent,width,hint,search)
+  local box=GV.make('EditBox',parent,search and {'SearchBoxTemplate','InputBoxTemplate'} or {'InputBoxTemplate'})
+  box:SetSize(width,20); box:SetAutoFocus(false)
+  if box.Instructions then box.Instructions:SetText(hint)
+  else
+    local text=label(box,'GameFontDisableSmall'); text:SetPoint('LEFT',4,0); text:SetText(hint)
+    box:HookScript('OnTextChanged',function(self) text:SetShown((self:GetText() or '')=='') end)
+  end
+  box:HookScript('OnEscapePressed',function(self) self:ClearFocus() end)
+  return box
+end
+local function enable(widget,on) if on then widget:Enable() else widget:Disable() end end
+-- A row of buttons where one is picked, like the game's own filter buttons.
+local function segmented(parent,options,get,set,width)
+  local group={}
+  for i,option in ipairs(options) do
+    local b=button(parent,option[2],width)
+    b.value=option[1]
+    if i>1 then b:SetPoint('LEFT',group[i-1],'RIGHT',2,0) end
+    b:SetScript('OnClick',function(self) set(self.value); requestUpdate() end)
+    group[i]=b
+  end
+  function group.refresh() for _,b in ipairs(group) do if b.value==get() then b:LockHighlight() else b:UnlockHighlight() end end end
+  return group
+end
+-- Pins a segmented group's right edge `gap` from the parent's top right corner.
+local function pinRight(group,parent,width,gap)
+  group[1]:SetPoint('TOPRIGHT',parent,'TOPRIGHT',-(gap+(#group-1)*(width+2)),0)
+end
+function GV.money(copper)
+  if GetCoinTextureString then return GetCoinTextureString(copper) end
+  return math.floor(copper/10000)..'g '..(math.floor(copper/100)%100)..'s '..(copper%100)..'c'
+end
+-- A scrolling list that only builds the rows that fit, so long banks stay quick. build(row) makes a row's
+-- parts once; draw(row,entry) fills it. Rows sit in `parent`; the scroll bar takes `gutter` on the right.
+function GV.makeList(parent,rowHeight,build,draw,gutter)
+  local list={rows={},data={}}
+  local scroll=GV.make('ScrollFrame',parent,{'FauxScrollFrameTemplate'})
+  scroll:SetPoint('TOPLEFT'); scroll:SetPoint('BOTTOMRIGHT',-(gutter or 26),0)
+  local function update() list:Update() end
+  scroll:SetScript('OnVerticalScroll',function(self,offset)
+    if FauxScrollFrame_OnVerticalScroll then FauxScrollFrame_OnVerticalScroll(self,offset,rowHeight,update) end
+  end)
+  function list:Update()
+    local visible=math.max(1,math.floor((parent:GetHeight() or 0)/rowHeight))
+    for i=#self.rows+1,visible do
+      local row=CreateFrame('Button',nil,parent)
+      row:SetHeight(rowHeight)
+      row:SetPoint('TOPLEFT',0,-(i-1)*rowHeight); row:SetPoint('RIGHT',scroll,'RIGHT',0,0)
+      local stripe=row:CreateTexture(nil,'BACKGROUND'); stripe:SetAllPoints()
+      stripe:SetColorTexture(1,1,1,(i%2==0) and .035 or 0)
+      local glow=row:CreateTexture(nil,'HIGHLIGHT'); glow:SetAllPoints(); glow:SetColorTexture(1,.82,0,.08)
+      build(row)
+      self.rows[i]=row
     end
+    local offset=(FauxScrollFrame_GetOffset and FauxScrollFrame_GetOffset(scroll)) or 0
+    if offset>0 and offset>#self.data-visible then
+      offset=math.max(0,#self.data-visible)
+      if FauxScrollFrame_SetOffset then FauxScrollFrame_SetOffset(scroll,offset) end
+      if scroll.ScrollBar then scroll.ScrollBar:SetValue(offset*rowHeight) end
+    end
+    if FauxScrollFrame_Update then FauxScrollFrame_Update(scroll,#self.data,visible,rowHeight) end
+    for i,row in ipairs(self.rows) do
+      local entry=i<=visible and self.data[offset+i] or nil
+      row.entry=entry
+      if entry then draw(row,entry); row:Show() else row:Hide() end
+    end
+  end
+  function list:SetData(data) self.data=data; self:Update() end
+  return list
+end
+-- Icon, a name line and a detail line: the shape of every item and request row.
+local function itemRowParts(row)
+  row.icon=row:CreateTexture(nil,'ARTWORK'); row.icon:SetSize(28,28); row.icon:SetPoint('LEFT',6,0)
+  row.icon:SetTexCoord(.07,.93,.07,.93)
+  row.name=label(row,'GameFontNormal'); row.name:SetPoint('TOPLEFT',row.icon,'TOPRIGHT',10,-1)
+  row.detail=label(row,'GameFontHighlightSmall'); row.detail:SetPoint('BOTTOMLEFT',row.icon,'BOTTOMRIGHT',10,1)
+end
+local function qualityColor(fontString,quality,dim)
+  local c=ITEM_QUALITY_COLORS and quality and ITEM_QUALITY_COLORS[quality]
+  if dim then fontString:SetTextColor(.5,.5,.5) elseif c then fontString:SetTextColor(c.r,c.g,c.b) else fontString:SetTextColor(1,1,1) end
+end
+local function linkItem(item)
+  local _,link=GV.itemInfo(item)
+  if link and InsertChatLink then InsertChatLink(link) end
+end
+-- The game's own item tooltip, with our lines instead of the generic ones the tooltip hook adds.
+local function itemTooltip(owner,item)
+  GameTooltip:SetOwner(owner,'ANCHOR_RIGHT')
+  ui.ownTooltip=true
+  if GameTooltip.SetItemByID then GameTooltip:SetItemByID(item) else GameTooltip:SetHyperlink('item:'..item) end
+  ui.ownTooltip=false
+  GameTooltip:AddLine(' ')
+end
+
+-- Bank tab ----------------------------------------------------------------------------------------
+-- One entry per item across the bank toons shown (all, or the one picked in the sidebar): how many are
+-- available in total, and each toon's share, so 5 on one toon and 40 on another reads as 45 with both listed.
+function GV.itemRows(bankId,where,term,sort)
+  local g,all,byItem=GV.guild(),{},{}
+  if not g then return all end
+  for _,bank in ipairs(GV.bankList()) do
+    local snap=g.banks[bank.id]
+    if snap and (not bankId or bank.id==bankId) then
+      -- Approved requests hold their items until mailed, so the All view shows what's still available.
+      local reserved=where=='all' and GV.reserved(bank.id) or {}
+      local items={}
+      if where~='bank' then for id,count in pairs(snap.bags or {}) do items[id]={bags=count,bank=0} end end
+      if where~='bags' then
+        for id,count in pairs(snap.bank or {}) do items[id]=items[id] or {bags=0,bank=0}; items[id].bank=count end
+      end
+      for id,c in pairs(items) do
+        local e=byItem[id]
+        if not e then e={id=id,total=0,available=0,reserved=0,toons={}}; byItem[id]=e; all[#all+1]=e end
+        local held=c.bags+c.bank
+        local held_back=math.min(held,reserved[id] or 0)
+        e.toons[#e.toons+1]={id=bank.id,name=snap.owner or bank.name,bags=c.bags,bank=c.bank,reserved=held_back,available=held-held_back}
+        e.total=e.total+held; e.reserved=e.reserved+held_back; e.available=e.available+held-held_back
+      end
+    end
+  end
+  local shown={}
+  for _,e in ipairs(all) do
+    local name,_,quality,icon=GV.itemInfo(e.id)
+    e.name,e.quality,e.icon=name or ('Item #'..e.id),quality or 1,icon
+    if term=='' or e.name:lower():find(term,1,true) then
+      table.sort(e.toons,function(a,b) if a.available~=b.available then return a.available>b.available end return a.name<b.name end)
+      local parts={}
+      if bankId then
+        local t=e.toons[1]
+        if t.bags>0 then parts[#parts+1]=MUTED..'Bags|r '..t.bags end
+        if t.bank>0 then parts[#parts+1]=MUTED..'Bank|r '..t.bank end
+      else
+        for _,t in ipairs(e.toons) do parts[#parts+1]=MUTED..displayName(t.name)..'|r '..(t.bags+t.bank) end
+      end
+      e.where=table.concat(parts,MUTED..'   ·   |r')
+      shown[#shown+1]=e
+    end
+  end
+  table.sort(shown,function(a,b)
+    if sort=='count' and a.available~=b.available then return a.available>b.available end
+    if sort=='quality' and a.quality~=b.quality then return a.quality>b.quality end
+    return a.name<b.name
+  end)
+  return shown
+end
+-- The toon to request an item from: the one picked in the sidebar if it has some, else the one with the most.
+function GV.bestToon(item)
+  local g,best,most=GV.guild(),nil,0
+  if not g then return nil end
+  for _,bank in ipairs(GV.bankList()) do
+    local n=GV.available(bank.id,item)
+    if n>0 and (bank.id==db.ui.bank or n>most) then
+      best,most=(g.banks[bank.id] and g.banks[bank.id].owner) or bank.name,n
+      if bank.id==db.ui.bank then break end
+    end
+  end
+  return best
+end
+function GV.buildItemsPage(page)
+  local side=CreateFrame('Frame',nil,page)
+  side:SetPoint('TOPLEFT'); side:SetPoint('BOTTOMLEFT'); side:SetWidth(SIDEBAR_W)
+  local shade=side:CreateTexture(nil,'BACKGROUND'); shade:SetAllPoints(); shade:SetColorTexture(0,0,0,.25)
+  local heading=label(side,'GameFontNormal'); heading:SetPoint('TOPLEFT',10,-8); heading:SetText('Bank toons')
+  local area=CreateFrame('Frame',nil,side); area:SetPoint('TOPLEFT',0,-28); area:SetPoint('BOTTOMRIGHT',0,4)
+  ui.toonList=GV.makeList(area,40,function(row)
+    row.selected=row:CreateTexture(nil,'BORDER'); row.selected:SetAllPoints(); row.selected:SetColorTexture(1,.82,0,.12)
+    row.bar=row:CreateTexture(nil,'ARTWORK'); row.bar:SetPoint('TOPLEFT'); row.bar:SetPoint('BOTTOMLEFT'); row.bar:SetWidth(3)
+    row.bar:SetColorTexture(1,.82,0,.9)
+    row.name=label(row,'GameFontHighlight'); row.name:SetPoint('TOPLEFT',12,-5); row.name:SetPoint('RIGHT',-4,0)
+    row.detail=label(row,'GameFontHighlightSmall'); row.detail:SetPoint('BOTTOMLEFT',12,6); row.detail:SetPoint('RIGHT',-4,0)
+    row:SetScript('OnClick',function(self) db.ui.bank=self.entry.id; requestUpdate() end)
+  end,function(row,toon)
+    local on=db.ui.bank==toon.id
+    row.selected:SetShown(on); row.bar:SetShown(on)
+    row.name:SetText(toon.label); row.detail:SetText(toon.detail)
+  end,22)
+  local main=CreateFrame('Frame',nil,page)
+  main:SetPoint('TOPLEFT',side,'TOPRIGHT',10,0); main:SetPoint('BOTTOMRIGHT')
+  ui.sort=button(main,'Sort: Name',100); ui.sort:SetPoint('TOPRIGHT',-24,0)
+  ui.sort:SetScript('OnClick',function()
+    local at=1
+    for i,k in ipairs(SORT_ORDER) do if k==db.ui.sort then at=i end end
+    db.ui.sort=SORT_ORDER[at%#SORT_ORDER+1]; requestUpdate()
+  end)
+  ui.where=segmented(main,{{'all','All'},{'bags','Bags'},{'bank','Bank'}},function() return db.ui.filter end,function(v) db.ui.filter=v end,52)
+  pinRight(ui.where,main,52,24+100+10)
+  ui.search=editBox(main,160,'Search items',true)
+  ui.search:SetPoint('TOPLEFT',8,-1); ui.search:SetPoint('RIGHT',ui.where[1],'LEFT',-12,0)
+  ui.search:HookScript('OnTextChanged',function() requestUpdate() end)
+  ui.summary=label(main,'GameFontHighlightSmall'); ui.summary:SetPoint('TOPLEFT',4,-32); ui.summary:SetPoint('RIGHT',-24,0)
+  local list=CreateFrame('Frame',nil,main); list:SetPoint('TOPLEFT',0,-52); list:SetPoint('BOTTOMRIGHT',0,20)
+  ui.itemList=GV.makeList(list,ITEM_ROW_H,GV.buildItemRow,GV.drawItemRow)
+  ui.itemsEmpty=label(list,'GameFontDisable','CENTER',true); ui.itemsEmpty:SetPoint('TOPLEFT',20,-40); ui.itemsEmpty:SetPoint('RIGHT',-46,0)
+  local hint=label(main,'GameFontDisableSmall'); hint:SetPoint('BOTTOMLEFT',4,3)
+  hint:SetText('Click an item to request it   ·   Shift-click to link it in chat')
+end
+function GV.buildItemRow(row)
+  itemRowParts(row)
+  row.count=label(row,'GameFontHighlightLarge','RIGHT')
+  row.held=label(row,'GameFontHighlightSmall','RIGHT'); row.held:SetPoint('BOTTOMRIGHT',-10,4)
+  row.name:SetPoint('RIGHT',-90,0); row.detail:SetPoint('RIGHT',-90,0)
+  row:SetScript('OnEnter',function(self)
+    local e=self.entry
+    if not e then return end
+    itemTooltip(self,e.id)
+    for _,t in ipairs(e.toons) do
+      local parts={}
+      if t.bags>0 then parts[#parts+1]='bags '..t.bags end
+      if t.bank>0 then parts[#parts+1]='bank '..t.bank end
+      if t.reserved>0 then parts[#parts+1]=ORANGE..t.reserved..' reserved|r' end
+      GameTooltip:AddDoubleLine(displayName(t.name),table.concat(parts,', '),1,.82,0,1,1,1)
+    end
+    GameTooltip:AddLine('Click to request   ·   Shift-click to link',.6,.6,.6)
     GameTooltip:Show()
   end)
-  r:SetScript('OnLeave',function() GameTooltip:Hide() end)
-  r:SetScript('OnClick',function(self)
-    if IsShiftKeyDown() then
-      local _,link=GV.itemInfo(self.id)
-      if link and InsertChatLink then InsertChatLink(link) end
-    elseif IsControlKeyDown() and not self.request then
-      GV.promptRequest(self.id,self.owner)
-    end
+  row:SetScript('OnLeave',function() GameTooltip:Hide() end)
+  row:SetScript('OnClick',function(self)
+    if not self.entry then return end
+    if IsShiftKeyDown() then linkItem(self.entry.id) else GV.openRequestDialog(self.entry) end
   end)
-  rows[i]=r
-  return r
 end
-function GV.buildWindow()
-  local f=CreateFrame('Frame','GuildBankToonsFrame',UIParent,'BasicFrameTemplateWithInset')
-  f:SetSize(460,500); f:SetPoint('CENTER'); f:SetFrameStrata('HIGH'); f:SetClampedToScreen(true)
-  f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag('LeftButton')
-  f:SetScript('OnDragStart',f.StartMoving); f:SetScript('OnDragStop',f.StopMovingOrSizing)
-  f:SetScript('OnShow',function() requestUpdate() end)
-  tinsert(UISpecialFrames,'GuildBankToonsFrame')
-  local title=f.TitleText or f:CreateFontString(nil,'OVERLAY','GameFontHighlight')
-  if not f.TitleText then title:SetPoint('TOP',0,-6) end
-  title:SetText('Forever - Guild Bank Toons')
-  ui.bankButtons={}
-  for i=1,5 do
-    local b=CreateFrame('Button',nil,f,'UIPanelButtonTemplate')
-    b:SetSize(84,22); b:SetPoint('TOPLEFT',12+(i-1)*87,-30)
-    b:SetScript('OnClick',function(self)
-      if self.pages then db.ui.page=(db.ui.page or 1)%self.pages+1
-      else db.ui.bank=self.id; db.ui.mode='items' end
+function GV.drawItemRow(row,e)
+  row.icon:SetTexture(e.icon or QUESTION_ICON)
+  row.name:SetText(e.name); qualityColor(row.name,e.quality,e.available<=0)
+  row.detail:SetText(e.where)
+  row.count:SetText(e.available)
+  row.count:ClearAllPoints()
+  if e.reserved>0 then
+    row.count:SetPoint('TOPRIGHT',-10,-3)
+    row.held:SetText(ORANGE..e.reserved..' reserved|r'); row.held:Show()
+  else
+    row.count:SetPoint('RIGHT',-10,0); row.held:Hide()
+  end
+end
+function GV.refreshItems()
+  local g=GV.guild()
+  local banks=GV.bankList()
+  local picked=false
+  for _,bank in ipairs(banks) do if bank.id==db.ui.bank then picked=true end end
+  if not picked then db.ui.bank=nil end
+  local toons,gold,withData={},0,0
+  for _,bank in ipairs(banks) do
+    local snap=g.banks[bank.id]
+    if snap then gold=gold+(snap.gold or 0); withData=withData+1 end
+    toons[#toons+1]={id=bank.id,label=displayName(bank.name),
+      detail=snap and (GV.money(snap.gold or 0)..'  '..MUTED..ago(snap.stamp)..'|r') or (MUTED..'waiting for contents|r')}
+  end
+  if #banks>0 then
+    table.insert(toons,1,{id=nil,label='All bank toons',detail=GV.money(gold)..'  '..MUTED..#banks..(#banks==1 and ' toon' or ' toons')..'|r'})
+  end
+  ui.toonList:SetData(toons)
+  ui.where.refresh()
+  ui.sort:SetText('Sort: '..SORTS[db.ui.sort or 'name'])
+  local term=(ui.search:GetText() or ''):lower()
+  local list=g and GV.itemRows(db.ui.bank,db.ui.filter,term,db.ui.sort or 'name') or {}
+  ui.itemList:SetData(list)
+  local snap=g and db.ui.bank and g.banks[db.ui.bank]
+  if not g or #banks==0 then ui.summary:SetText('')
+  elseif db.ui.bank and snap then
+    local notes={GV.money(snap.gold or 0),MUTED..'updated '..ago(snap.stamp)..(snap.via and (' via '..snap.via) or '')..'|r'}
+    if (snap.bankStamp or 0)==0 then notes[#notes+1]=ORANGE..'bank not opened yet|r' end
+    ui.summary:SetText(displayName(snap.owner)..'   ·   '..table.concat(notes,'   ·   '))
+  elseif db.ui.bank then ui.summary:SetText('')
+  else
+    ui.summary:SetText(#list..(#list==1 and ' item' or ' items')..'   ·   '..withData..' of '..#banks..' bank toons reporting   ·   '..GV.money(gold))
+  end
+  local empty=''
+  if not g then empty='Join a guild to see its bank.'
+  elseif #banks==0 then
+    empty='No bank toons yet.\n\nThe guild master adds them on the '..YELLOW..'Guild Master|r tab. You can also follow one just for yourself under '..YELLOW..'Settings|r.'
+  elseif db.ui.bank and not snap then
+    empty='Waiting for this toon\'s contents.\n\nThey arrive when the toon, or a guildmate who has seen them, is online.'
+  elseif #list==0 then
+    empty=(term~='' and ('Nothing matches "'..term..'".')) or (withData==0 and 'Waiting for the bank toons\' contents.') or 'Empty.'
+  end
+  ui.itemsEmpty:SetText(empty)
+end
+
+-- Request dialog ------------------------------------------------------------------------------------
+-- Pick which toon to ask (with how many each has available), how many, and an optional note.
+function GV.buildRequestDialog()
+  local d=GV.make('Frame',UIParent,{'BasicFrameTemplateWithInset'},'GuildBankToonsRequestDialog')
+  d:SetSize(340,260); d:SetPoint('CENTER',UIParent,'CENTER',0,80)
+  d:SetFrameStrata('DIALOG'); d:SetToplevel(true); d:SetClampedToScreen(true)
+  d:SetMovable(true); d:EnableMouse(true); d:RegisterForDrag('LeftButton')
+  d:SetScript('OnDragStart',d.StartMoving); d:SetScript('OnDragStop',d.StopMovingOrSizing)
+  table.insert(UISpecialFrames,'GuildBankToonsRequestDialog')
+  local title=d.TitleText or label(d,'GameFontHighlight','CENTER')
+  if not d.TitleText then title:SetPoint('TOP',0,-6) end
+  title:SetText('Request from the guild bank')
+  d.icon=d:CreateTexture(nil,'ARTWORK'); d.icon:SetSize(36,36); d.icon:SetPoint('TOPLEFT',18,-36)
+  d.name=label(d,'GameFontNormalLarge'); d.name:SetPoint('TOPLEFT',d.icon,'TOPRIGHT',10,-2); d.name:SetPoint('RIGHT',-16,0)
+  d.total=label(d,'GameFontHighlightSmall'); d.total:SetPoint('TOPLEFT',d.name,'BOTTOMLEFT',0,-4)
+  d.from=label(d,'GameFontNormal'); d.from:SetPoint('TOPLEFT',18,-86); d.from:SetText('From')
+  d.choices={}
+  d.amountLabel=label(d,'GameFontNormal'); d.amountLabel:SetText('How many')
+  d.amount=editBox(d,56,''); d.amount:SetNumeric(true); d.amount:SetMaxLetters(4)
+  d.max=button(d,'Max',50); d.max:SetPoint('LEFT',d.amount,'RIGHT',8,0)
+  d.max:SetScript('OnClick',function() local t=d.toons[d.choice]; if t then d.amount:SetText(t.available) end end)
+  d.noteLabel=label(d,'GameFontNormal'); d.noteLabel:SetText('Note')
+  d.note=editBox(d,210,'Optional, e.g. "for my alt"'); d.note:SetMaxLetters(80)
+  d.warning=label(d,'GameFontRedSmall')
+  d.ok=button(d,'Request',110); d.ok:SetPoint('BOTTOMRIGHT',-16,14)
+  d.cancel=button(d,CANCEL or 'Cancel',90); d.cancel:SetPoint('RIGHT',d.ok,'LEFT',-8,0)
+  d.ok:SetScript('OnClick',GV.submitRequest); d.cancel:SetScript('OnClick',function() d:Hide() end)
+  d.amount:HookScript('OnTextChanged',GV.checkRequest)
+  d.amount:SetScript('OnEnterPressed',GV.submitRequest); d.note:SetScript('OnEnterPressed',GV.submitRequest)
+  ui.request=d
+end
+function GV.checkRequest()
+  local d=ui.request
+  local n=tonumber(d.amount:GetText() or '') or 0
+  local t=d.toons[d.choice]
+  for i,radio in ipairs(d.choices) do radio:SetChecked(i==d.choice) end
+  local warning=''
+  if not t then warning='Nobody has this item right now.'
+  elseif n<1 then warning='Enter how many you need.'
+  elseif n>t.available then warning='Only '..t.available..' available on '..displayName(t.name)..'.' end
+  d.warning:SetText(warning)
+  enable(d.ok,warning=='')
+  return warning==''
+end
+function GV.openRequestDialog(e)
+  if not ui.request then GV.buildRequestDialog() end
+  local d=ui.request
+  d.item,d.toons,d.choice=e.id,{},1
+  for _,t in ipairs(e.toons) do if t.available>0 then d.toons[#d.toons+1]=t end end
+  for i,t in ipairs(d.toons) do if t.id==db.ui.bank then d.choice=i end end
+  d.icon:SetTexture(e.icon or QUESTION_ICON)
+  d.name:SetText(e.name); qualityColor(d.name,e.quality)
+  d.total:SetText(e.available..' available in total'..(e.reserved>0 and (MUTED..'   ('..e.reserved..' reserved)|r') or ''))
+  local y=-108
+  for i,t in ipairs(d.toons) do
+    local radio=d.choices[i]
+    if not radio then
+      radio=GV.make('CheckButton',d,{'UIRadioButtonTemplate'})
+      radio:SetSize(16,16)
+      radio.label=label(radio,'GameFontHighlight'); radio.label:SetPoint('LEFT',radio,'RIGHT',6,0)
+      radio:SetScript('OnClick',function(self) d.choice=self.index; GV.checkRequest() end)
+      d.choices[i]=radio
+    end
+    radio.index=i
+    radio:ClearAllPoints(); radio:SetPoint('TOPLEFT',22,y)
+    radio.label:SetText(displayName(t.name)..'   '..MUTED..t.available..' available|r')
+    radio:Show()
+    y=y-22
+  end
+  for i=#d.toons+1,#d.choices do d.choices[i]:Hide() end
+  if #d.toons==0 then y=y-4 end
+  d.amountLabel:ClearAllPoints(); d.amountLabel:SetPoint('TOPLEFT',18,y-12)
+  d.amount:ClearAllPoints(); d.amount:SetPoint('LEFT',d.amountLabel,'LEFT',90,0)
+  d.noteLabel:ClearAllPoints(); d.noteLabel:SetPoint('TOPLEFT',18,y-44)
+  d.note:ClearAllPoints(); d.note:SetPoint('LEFT',d.noteLabel,'LEFT',90,0)
+  d.warning:ClearAllPoints(); d.warning:SetPoint('TOPLEFT',18,y-72)
+  d:SetHeight(-y+130)
+  d.amount:SetText('1'); d.note:SetText('')
+  d:Show(); GV.checkRequest()
+  d.amount:SetFocus(); d.amount:HighlightText()
+end
+function GV.submitRequest()
+  local d=ui.request
+  if not GV.checkRequest() then return end
+  local t=d.toons[d.choice]
+  GV.createRequest(d.item,tonumber(d.amount:GetText()),d.note:GetText() or '',t.name)
+  d:Hide()
+end
+
+-- Requests tab ------------------------------------------------------------------------------------
+function GV.buildRequestsPage(page)
+  ui.reqFilter=segmented(page,{{'active','Active'},{'mine','Mine'},{'all','All'}},
+    function() return db.ui.reqFilter end,function(v) db.ui.reqFilter=v end,64)
+  pinRight(ui.reqFilter,page,64,24)
+  ui.reqSearch=editBox(page,200,'Search item, name or note',true)
+  ui.reqSearch:SetPoint('TOPLEFT',8,-1); ui.reqSearch:SetPoint('RIGHT',ui.reqFilter[1],'LEFT',-12,0)
+  ui.reqSearch:HookScript('OnTextChanged',function() requestUpdate() end)
+  ui.reqInfo=label(page,'GameFontHighlightSmall'); ui.reqInfo:SetPoint('TOPLEFT',4,-32); ui.reqInfo:SetPoint('RIGHT',-24,0)
+  local list=CreateFrame('Frame',nil,page); list:SetPoint('TOPLEFT',0,-52); list:SetPoint('BOTTOMRIGHT')
+  ui.reqList=GV.makeList(list,ITEM_ROW_H,GV.buildRequestRow,GV.drawRequestRow)
+  ui.reqEmpty=label(list,'GameFontDisable','CENTER',true); ui.reqEmpty:SetPoint('TOPLEFT',20,-40); ui.reqEmpty:SetPoint('RIGHT',-46,0)
+end
+function GV.buildRequestRow(row)
+  itemRowParts(row)
+  row.actions={}
+  for n=1,2 do
+    local b=button(row,'',72); b:SetHeight(20); b:SetPoint('RIGHT',-(8+(2-n)*76),0)
+    b:SetScript('OnClick',function(self) GV.setRequestStatus(row.entry,self.status) end)
+    row.actions[n]=b
+  end
+  row.status=label(row,'GameFontHighlightSmall','RIGHT')
+  row.name:SetPoint('RIGHT',row.status,'LEFT',-10,0); row.detail:SetPoint('RIGHT',row.status,'LEFT',-10,0)
+  row:SetScript('OnEnter',function(self)
+    local q=self.entry
+    if not q then return end
+    itemTooltip(self,q.item)
+    GameTooltip:AddLine('Requested by '..displayName(q.by)..' from '..displayName(q.bank)..', '..ago(tonumber(q.id:match('%-(%d+)%-%d+$')) or q.updated),1,1,1)
+    if (q.note or '')~='' then GameTooltip:AddLine('"'..q.note..'"',1,.82,0,true) end
+    if q.status=='open' then GameTooltip:AddLine(STATUSES.open,.6,.6,.6)
+    else GameTooltip:AddLine(STATUSES[q.status]..' by '..displayName(q.actor or '?'),.6,.6,.6) end
+    if q.status=='mailed' and q.approvedBy then GameTooltip:AddLine('Approved by '..displayName(q.approvedBy),.6,.6,.6) end
+    GameTooltip:AddLine('Shift-click to link',.6,.6,.6)
+    GameTooltip:Show()
+  end)
+  row:SetScript('OnLeave',function() GameTooltip:Hide() end)
+  row:SetScript('OnClick',function(self) if self.entry and IsShiftKeyDown() then linkItem(self.entry.item) end end)
+end
+function GV.drawRequestRow(row,q)
+  local name,_,quality,icon=GV.itemInfo(q.item)
+  row.icon:SetTexture(icon or QUESTION_ICON)
+  row.name:SetText(q.count..'x '..(name or ('Item #'..q.item))); qualityColor(row.name,quality,not isActive(q))
+  local parts={displayName(q.by)..MUTED..' from |r'..displayName(q.bank),MUTED..ago(tonumber(q.id:match('%-(%d+)%-%d+$')) or q.updated)..'|r'}
+  if (q.note or '')~='' then parts[#parts+1]=MUTED..'"'..q.note..'"|r' end
+  row.detail:SetText(table.concat(parts,MUTED..'   ·   |r'))
+  local specs,me={},myId()
+  for _,spec in ipairs({{'Approve','approved'},{'Mailed','mailed'},{'Deny','denied'},{'Cancel','cancelled'}}) do
+    if #specs<2 and GV.allowed(q,q.status,spec[2],me) then specs[#specs+1]=spec end
+  end
+  for n,b in ipairs(row.actions) do
+    local spec=specs[n-(2-#specs)]
+    b:SetShown(spec~=nil)
+    if spec then b:SetText(spec[1]); b.status=spec[2] end
+  end
+  row.status:ClearAllPoints(); row.status:SetPoint('RIGHT',-(12+#specs*76),0)
+  row.status:SetText(STATUS_SHORT[q.status] or q.status)
+end
+function GV.refreshRequests()
+  ui.reqFilter.refresh()
+  local me,term,filter=myId(),(ui.reqSearch:GetText() or ''):lower(),db.ui.reqFilter
+  local list,waiting,toMail={},0,0
+  for _,q in ipairs(GV.requestList()) do
+    if q.status=='open' then waiting=waiting+1 end
+    if q.status=='approved' then toMail=toMail+1 end
+    local keep=filter=='all' or (filter=='active' and isActive(q)) or (filter=='mine' and (nameId(q.by)==me or nameId(q.bank)==me))
+    if keep and term~='' then
+      local name=GV.itemInfo(q.item) or ''
+      local text=(name..' '..q.by..' '..q.bank..' '..(q.note or '')):lower()
+      keep=text:find(term,1,true)~=nil
+    end
+    if keep then list[#list+1]=q end
+  end
+  ui.reqList:SetData(list)
+  local who=GV.isApprover(me) and 'You can approve or deny requests.' or 'Click an item on the Bank tab to request it.'
+  ui.reqInfo:SetText(YELLOW..waiting..'|r waiting for approval   ·   '..GREEN..toMail..'|r approved, waiting to be mailed   ·   '..MUTED..who..'|r')
+  local empty=''
+  if #list==0 then empty=term~='' and ('Nothing matches "'..term..'".') or (filter=='active' and 'No open requests.' or 'No requests.') end
+  ui.reqEmpty:SetText(empty)
+end
+
+-- Settings tab ------------------------------------------------------------------------------------
+-- Following a bank toon just for yourself, without the guild master's list or the guild info.
+function GV.follow(name,on)
+  local g,id=GV.guild(),nameId(name)
+  if not g then log('You must be in a guild.',true); return false end
+  if not id or name:find('[|,]') then log('Enter the bank toon\'s full name, First Last.',true); return false end
+  if on then
+    g.extra[id]=baseName(name); log('Following '..baseName(name)..' just for you.',true)
+  elseif g.managed[id] then
+    log(displayName(name)..' was set by the guild master, who can remove it on the Guild Master tab.',true); return false
+  elseif g.tagged[id] then
+    log(displayName(name)..' is tagged in the guild info; an officer has to remove the tag there.',true); return false
+  else
+    g.extra[id]=nil; log('Stopped following '..displayName(name)..'.',true)
+  end
+  GV.banksChanged()
+  return true
+end
+function GV.buildSettingsPage(page)
+  local scroll=GV.make('ScrollFrame',page,{'UIPanelScrollFrameTemplate'})
+  scroll:SetPoint('TOPLEFT'); scroll:SetPoint('BOTTOMRIGHT',-26,0)
+  local c=CreateFrame('Frame',nil,scroll); c:SetSize(480,700)
+  scroll:SetScrollChild(c)
+  scroll:HookScript('OnSizeChanged',function(_,width) if width then c:SetWidth(width) end end)
+  ui.checks={}
+  local y=-4
+  local function heading(text)
+    local h=label(c,'GameFontNormal'); h:SetPoint('TOPLEFT',4,y); h:SetText(text)
+    local line=c:CreateTexture(nil,'ARTWORK'); line:SetColorTexture(1,.82,0,.2); line:SetHeight(1)
+    line:SetPoint('TOPLEFT',4,y-18); line:SetPoint('RIGHT',c,'RIGHT',-8,0)
+    y=y-28
+  end
+  local function check(field,text,note,changed)
+    local box=GV.make('CheckButton',c,{'UICheckButtonTemplate','InterfaceOptionsCheckButtonTemplate'})
+    box:SetSize(26,26); box:SetPoint('TOPLEFT',4,y)
+    local caption=label(c,'GameFontHighlight'); caption:SetPoint('LEFT',box,'RIGHT',4,1); caption:SetText(text)
+    box.field=field
+    box:SetScript('OnClick',function(self)
+      db.settings[field]=self:GetChecked() and true or false
+      if changed then changed() end
       requestUpdate()
     end)
-    ui.bankButtons[i]=b
+    ui.checks[#ui.checks+1]=box
+    y=y-24
+    if note then
+      local n=label(c,'GameFontDisableSmall','LEFT',true); n:SetPoint('TOPLEFT',34,y+2); n:SetPoint('RIGHT',c,'RIGHT',-8,0); n:SetText(note)
+      y=y-16
+    end
+    y=y-6
   end
-  local search=CreateFrame('EditBox',nil,f,'InputBoxTemplate')
-  search:SetSize(160,20); search:SetPoint('TOPLEFT',20,-60); search:SetAutoFocus(false)
-  search:SetScript('OnTextChanged',function() requestUpdate() end)
-  search:SetScript('OnEscapePressed',search.ClearFocus); search:SetScript('OnEnterPressed',search.ClearFocus)
-  local hint=search:CreateFontString(nil,'OVERLAY','GameFontDisableSmall'); hint:SetPoint('LEFT',4,0); hint:SetText('Search items')
-  search:HookScript('OnTextChanged',function(self) hint:SetShown(self:GetText()=='') end)
-  ui.search=search
-  ui.filterButtons={}
-  for i,filter in ipairs({'all','bags','bank'}) do
-    local b=CreateFrame('Button',nil,f,'UIPanelButtonTemplate')
-    b:SetSize(55,22); b:SetPoint('TOPLEFT',192+(i-1)*58,-59)
-    b:SetText(filter=='all' and 'All' or (filter=='bags' and 'Bags' or 'Bank'))
-    b.filter=filter
-    b:SetScript('OnClick',function(self) db.ui.filter=self.filter; db.ui.mode='items'; requestUpdate() end)
-    ui.filterButtons[i]=b
+  heading('Display')
+  check('tooltips','Show guild bank counts on item tooltips','Hover any item to see how many each bank toon has.')
+  check('minimap','Show the minimap button',nil,function() GV.placeMinimap() end)
+  check('quiet','Quiet mode','Only important messages in chat: requests and decisions.')
+  local size=label(c,'GameFontHighlight'); size:SetPoint('TOPLEFT',10,y-4); size:SetText('Window size')
+  local smaller=button(c,'-',26); smaller:SetPoint('LEFT',size,'LEFT',110,0)
+  ui.scaleText=label(c,'GameFontHighlight','CENTER'); ui.scaleText:SetWidth(48); ui.scaleText:SetPoint('LEFT',smaller,'RIGHT',4,0)
+  local bigger=button(c,'+',26); bigger:SetPoint('LEFT',ui.scaleText,'RIGHT',4,0)
+  local reset=button(c,'Reset window',110); reset:SetPoint('LEFT',bigger,'RIGHT',12,0)
+  smaller:SetScript('OnClick',function() GV.setScale((db.ui.scale or 1)-.05) end)
+  bigger:SetScript('OnClick',function() GV.setScale((db.ui.scale or 1)+.05) end)
+  reset:SetScript('OnClick',function() db.ui.point,db.ui.w,db.ui.h,db.ui.scale=nil,nil,nil,1; GV.placeWindow(); requestUpdate() end)
+  y=y-40
+  heading('Requests')
+  check('whispers','Whisper officers who don\'t have the addon','When you make a request, up to 3 online officers without the addon get a whisper.')
+  check('companion','Offer a reload when requests change','Turn on where the Discord companion runs, so it posts requests right away.')
+  heading('When playing a bank toon')
+  check('mailHelper','Show the mail helper at mailboxes','Lists approved requests beside the mail window and fills in each mail.')
+  check('autofill','Fill the first approved request when a mailbox opens')
+  heading('Follow a bank toon just for me')
+  local note=label(c,'GameFontDisableSmall','LEFT',true); note:SetPoint('TOPLEFT',8,y); note:SetPoint('RIGHT',c,'RIGHT',-8,0)
+  note:SetText('Only you see toons you follow here. To add one for the whole guild, ask the guild master.')
+  y=y-22
+  ui.followName=editBox(c,200,'First Last'); ui.followName:SetPoint('TOPLEFT',14,y)
+  local follow=button(c,'Follow',90); follow:SetPoint('LEFT',ui.followName,'RIGHT',10,0)
+  local function doFollow()
+    if GV.follow(ui.followName:GetText() or '',true) then ui.followName:SetText(''); ui.followName:ClearFocus() end
   end
-  ui.requestsButton=CreateFrame('Button',nil,f,'UIPanelButtonTemplate')
-  ui.requestsButton:SetSize(84,22); ui.requestsButton:SetPoint('TOPLEFT',368,-59)
-  ui.requestsButton:SetScript('OnClick',function() db.ui.mode=(db.ui.mode=='requests') and 'items' or 'requests'; requestUpdate() end)
-  ui.info=f:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
-  ui.info:SetPoint('TOPLEFT',16,-88); ui.info:SetPoint('RIGHT',-16,0); ui.info:SetJustifyH('LEFT')
-  local scroll=CreateFrame('ScrollFrame',nil,f,'UIPanelScrollFrameTemplate')
-  scroll:SetPoint('TOPLEFT',12,-108); scroll:SetPoint('BOTTOMRIGHT',-32,12)
-  ui.content=CreateFrame('Frame',nil,scroll); ui.content:SetSize(400,1)
-  scroll:SetScrollChild(ui.content)
-  ui.empty=ui.content:CreateFontString(nil,'OVERLAY','GameFontDisable')
-  ui.empty:SetPoint('TOPLEFT',8,-12); ui.empty:SetWidth(380); ui.empty:SetJustifyH('LEFT')
+  follow:SetScript('OnClick',doFollow); ui.followName:SetScript('OnEnterPressed',doFollow)
+  y=y-30
+  ui.followRows={}
+  for i=1,8 do
+    local row=CreateFrame('Frame',nil,c); row:SetSize(300,22); row:SetPoint('TOPLEFT',12,y-(i-1)*24)
+    row.name=label(row,'GameFontHighlight'); row.name:SetPoint('LEFT',4,0)
+    row.remove=button(row,'Stop following',120); row.remove:SetHeight(20); row.remove:SetPoint('RIGHT',0,0)
+    row.remove:SetScript('OnClick',function() GV.follow(row.toon,false); requestUpdate() end)
+    ui.followRows[i]=row
+  end
+  ui.followNone=label(c,'GameFontDisableSmall'); ui.followNone:SetPoint('TOPLEFT',16,y-4); ui.followNone:SetText('You aren\'t following any extra toons.')
+  ui.followAnchor=y
+  ui.syncHeading=label(c,'GameFontNormal')
+  ui.syncButton=button(c,'Sync now',100)
+  ui.syncButton:SetScript('OnClick',function() GV.syncAll(); GV.askManaged(); log('Asked the guild for the latest bank contents.',true) end)
+  ui.statusText=label(c,'GameFontHighlightSmall','LEFT',true); ui.statusText:SetPoint('RIGHT',c,'RIGHT',-8,0)
+  ui.settingsContent=c
+end
+function GV.setScale(scale)
+  db.ui.scale=math.max(.7,math.min(1.4,math.floor(scale*20+.5)/20))
+  if window then window:SetScale(db.ui.scale) end
+  requestUpdate()
+end
+function GV.refreshSettings()
+  for _,box in ipairs(ui.checks) do box:SetChecked(db.settings[box.field] and true or false) end
+  ui.scaleText:SetText(math.floor((db.ui.scale or 1)*100+.5)..'%')
+  local g,followed=GV.guild(),{}
+  if g then for _,name in pairs(g.extra) do followed[#followed+1]=name end end
+  table.sort(followed)
+  for i,row in ipairs(ui.followRows) do
+    row.toon=followed[i]
+    row:SetShown(followed[i]~=nil)
+    if followed[i] then row.name:SetText(displayName(followed[i])) end
+  end
+  ui.followNone:SetShown(#followed==0)
+  -- The sync section moves up under however many followed toons there are.
+  local y=ui.followAnchor-math.max(1,math.min(#followed,#ui.followRows))*24-16
+  ui.syncHeading:ClearAllPoints(); ui.syncHeading:SetPoint('TOPLEFT',4,y); ui.syncHeading:SetText('Sync')
+  ui.syncButton:ClearAllPoints(); ui.syncButton:SetPoint('TOPLEFT',10,y-24)
+  ui.statusText:ClearAllPoints(); ui.statusText:SetPoint('TOPLEFT',10,y-54)
+  ui.statusText:SetText(string.format('Version %s   ·   playing %s%s\nMessages sent %d, received %d, rejected %d, waiting to send %d',
+    VERSION,key(),GV.isBank(myId()) and ' (a bank toon)' or '',sent,received,rejected,#queue))
+  ui.settingsContent:SetHeight(-y+100)
+end
+
+-- Guild Master tab --------------------------------------------------------------------------------
+function GV.buildGMPage(page)
+  local title=label(page,'GameFontNormalLarge'); title:SetPoint('TOPLEFT',6,-4); title:SetText('Bank toons for the whole guild')
+  ui.gmInfo=label(page,'GameFontHighlightSmall','LEFT',true); ui.gmInfo:SetPoint('TOPLEFT',6,-28); ui.gmInfo:SetPoint('RIGHT',-24,0)
+  ui.gmName=editBox(page,220,'First Last of the bank toon'); ui.gmName:SetPoint('TOPLEFT',12,-64)
+  ui.gmAdd=button(page,'Add bank toon',130); ui.gmAdd:SetPoint('LEFT',ui.gmName,'RIGHT',10,0)
+  local function add()
+    if GV.gmChange('add',ui.gmName:GetText() or '') then ui.gmName:SetText(''); ui.gmName:ClearFocus() end
+  end
+  ui.gmAdd:SetScript('OnClick',add); ui.gmName:SetScript('OnEnterPressed',add)
+  local list=CreateFrame('Frame',nil,page); list:SetPoint('TOPLEFT',0,-96); list:SetPoint('BOTTOMRIGHT',0,52)
+  ui.gmList=GV.makeList(list,ITEM_ROW_H,function(row)
+    row.name=label(row,'GameFontHighlight'); row.name:SetPoint('TOPLEFT',12,-4)
+    row.detail=label(row,'GameFontHighlightSmall'); row.detail:SetPoint('BOTTOMLEFT',12,5)
+    row.remove=button(row,'Remove',80); row.remove:SetHeight(20); row.remove:SetPoint('RIGHT',-8,0)
+    row.name:SetPoint('RIGHT',row.remove,'LEFT',-8,0); row.detail:SetPoint('RIGHT',row.remove,'LEFT',-8,0)
+    row.remove:SetScript('OnClick',function(self) GV.gmChange('remove',self:GetParent().entry.name) end)
+  end,function(row,toon)
+    row.name:SetText(displayName(toon.name))
+    local snap=toon.snap
+    row.detail:SetText(snap and (GV.money(snap.gold or 0)..'   '..MUTED..'·   updated '..ago(snap.stamp)..'|r')
+      or (MUTED..'Waiting for this toon to log in with the addon and visit the banker.|r'))
+    row.remove:SetShown(toon.canEdit)
+  end)
+  ui.gmEmpty=label(list,'GameFontDisable','CENTER',true); ui.gmEmpty:SetPoint('TOPLEFT',20,-30); ui.gmEmpty:SetPoint('RIGHT',-46,0)
+  ui.gmClear=button(page,'Remove all',110); ui.gmClear:SetPoint('BOTTOMRIGHT',-24,24)
+  ui.gmClear:SetScript('OnClick',function() if StaticPopup_Show then StaticPopup_Show('GUILDBANKTOONS_CLEAR') end end)
+  ui.gmFooter=label(page,'GameFontDisableSmall','LEFT',true); ui.gmFooter:SetPoint('BOTTOMLEFT',6,4); ui.gmFooter:SetPoint('RIGHT',-24,0)
+end
+function GV.refreshGM()
+  local g=GV.guild()
+  if not g then ui.gmInfo:SetText('Join a guild to manage its bank toons.'); ui.gmList:SetData({}); return end
+  GV.readRoster()
+  local gm=GV.isGM(myId())
+  local set=g.managedStamp and ('Last changed by '..displayName(g.managedBy or '?')..', '..ago(g.managedStamp)..'.') or 'Nothing set yet.'
+  if gm then
+    ui.gmInfo:SetText('You\'re the guild master. Toons you add here show up for everyone in the guild, including guildmates who log in while you\'re offline. '..MUTED..set..'|r')
+  else
+    ui.gmInfo:SetText('Only the guild master can change this list; everyone in the guild sees it. '..MUTED..set..'|r')
+  end
+  ui.gmName:SetShown(gm); ui.gmAdd:SetShown(gm); ui.gmClear:SetShown(gm)
+  local list={}
+  for _,name in ipairs(GV.managedNames(g)) do list[#list+1]={name=name,snap=g.banks[nameId(name)],canEdit=gm} end
+  ui.gmList:SetData(list)
+  enable(ui.gmClear,#list>0)
+  ui.gmEmpty:SetText(#list==0 and (gm and 'Add the guild\'s first bank toon above. Then log in on it with the addon and visit the banker once.' or 'The guild master hasn\'t added any bank toons here yet.') or '')
+  local tagged={}
+  for id,name in pairs(g.tagged) do if not g.managed[id] then tagged[#tagged+1]=displayName(name) end end
+  table.sort(tagged)
+  local footer='Officers (ranks 0-'..(g.officerRank or 1)..') approve requests; add [GBT:officers=N] to the guild info to change that.'
+  if #tagged>0 then footer='Also from the guild info: '..table.concat(tagged,', ')..'.   '..footer end
+  ui.gmFooter:SetText(footer)
+end
+
+-- Frame -------------------------------------------------------------------------------------------
+local function screenSize()
+  local w=UIParent and UIParent.GetWidth and UIParent:GetWidth()
+  local h=UIParent and UIParent.GetHeight and UIParent:GetHeight()
+  return w or 1280,h or 800
+end
+function GV.saveWindow()
+  local point,_,relative,x,y=window:GetPoint()
+  if point then db.ui.point={point,relative,x,y} end
+  local w,h=window:GetSize()
+  if w and h then db.ui.w,db.ui.h=math.floor(w+.5),math.floor(h+.5) end
+end
+-- Restores the saved place, size and scale; the default fits small screens too.
+function GV.placeWindow()
+  local s=db.ui
+  local sw,sh=screenSize()
+  window:ClearAllPoints()
+  window:SetScale(s.scale or 1)
+  window:SetSize(s.w or math.min(760,sw-60),s.h or math.min(540,sh-160))
+  if s.point then window:SetPoint(s.point[1],UIParent,s.point[2],s.point[3],s.point[4])
+  else window:SetPoint('CENTER',UIParent,'CENTER',0,40) end
+end
+function GV.buildWindow()
+  local f=GV.make('Frame',UIParent,{'BasicFrameTemplateWithInset'},'GuildBankToonsFrame')
   window=f
+  f:SetFrameStrata('HIGH'); f:SetToplevel(true); f:SetClampedToScreen(true)
+  f:SetMovable(true); f:SetResizable(true); f:EnableMouse(true); f:RegisterForDrag('LeftButton')
+  if f.SetResizeBounds then f:SetResizeBounds(640,400,1600,1200)
+  elseif f.SetMinResize then f:SetMinResize(640,400); f:SetMaxResize(1600,1200) end
+  f:SetScript('OnDragStart',f.StartMoving)
+  f:SetScript('OnDragStop',function(self) self:StopMovingOrSizing(); GV.saveWindow() end)
+  f:SetScript('OnSizeChanged',function() requestUpdate() end)
+  f:SetScript('OnShow',function() requestUpdate() end)
+  table.insert(UISpecialFrames,'GuildBankToonsFrame')
+  local title=f.TitleText or label(f,'GameFontHighlight','CENTER')
+  if not f.TitleText then title:SetPoint('TOP',0,-6) end
+  title:SetText('Forever - Guild Bank Toons')
+  local grip=CreateFrame('Button',nil,f)
+  grip:SetSize(16,16); grip:SetPoint('BOTTOMRIGHT',-4,4); grip:SetFrameLevel((f:GetFrameLevel() or 0)+10)
+  grip:SetNormalTexture('Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up')
+  grip:SetHighlightTexture('Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight')
+  grip:SetPushedTexture('Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down')
+  grip:SetScript('OnMouseDown',function() f:StartSizing('BOTTOMRIGHT') end)
+  grip:SetScript('OnMouseUp',function() f:StopMovingOrSizing(); GV.saveWindow(); requestUpdate() end)
+  -- Tabs hang under the window like the character window's.
+  ui.tabs={}
+  for i,tab in ipairs(TABS) do
+    local b,template=GV.make('Button',f,{'PanelTabButtonTemplate','CharacterFrameTabButtonTemplate'},'GuildBankToonsFrameTab'..i)
+    b:SetID(i); b.key=tab.key; b:SetText(tab.label)
+    if i==1 then b:SetPoint('TOPLEFT',f,'BOTTOMLEFT',12,2)
+    else b:SetPoint('LEFT',ui.tabs[i-1],'RIGHT',template=='CharacterFrameTabButtonTemplate' and -16 or 3,0) end
+    b:SetScript('OnClick',function(self)
+      if PlaySound and SOUNDKIT and SOUNDKIT.IG_CHARACTER_INFO_TAB then pcall(PlaySound,SOUNDKIT.IG_CHARACTER_INFO_TAB) end
+      GV.showTab(self.key)
+    end)
+    if PanelTemplates_TabResize then pcall(PanelTemplates_TabResize,b,0) end
+    ui.tabs[i]=b
+  end
+  f.Tabs=ui.tabs
+  if PanelTemplates_SetNumTabs then pcall(PanelTemplates_SetNumTabs,f,#ui.tabs) end
+  ui.pages={}
+  for _,tab in ipairs(TABS) do
+    local page=CreateFrame('Frame',nil,f)
+    page:SetPoint('TOPLEFT',12,-32); page:SetPoint('BOTTOMRIGHT',-10,10)
+    page:Hide()
+    ui.pages[tab.key]=page
+  end
+  GV.buildItemsPage(ui.pages.items)
+  GV.buildRequestsPage(ui.pages.requests)
+  GV.buildSettingsPage(ui.pages.settings)
+  GV.buildGMPage(ui.pages.gm)
+  GV.placeWindow()
   f:Hide()
 end
+function GV.showTab(key)
+  if not ui.pages[key] then key='items' end
+  db.ui.mode=key
+  for i,b in ipairs(ui.tabs) do
+    if b.key==key and PanelTemplates_SetTab then pcall(PanelTemplates_SetTab,window,i) end
+  end
+  for k,page in pairs(ui.pages) do page:SetShown(k==key) end
+  requestUpdate()
+end
+function GV.open(tab)
+  if not window then GV.buildWindow() end
+  window:Show()
+  GV.showTab(tab or db.ui.mode)
+end
+function GV.toggle()
+  if window and window:IsShown() then window:Hide() else GV.open() end
+end
+function GuildBankToons_OnCompartmentClick() GV.toggle() end
 function GV.refresh()
   updatePending=false; sinceUpdate=0
   GV.refreshMailHelper()
   if not window or not window:IsShown() then return end
-  local g=GV.guild()
-  local banks=GV.bankList()
-  local bank=selectedBank(banks)
-  -- More than five bank characters: four per page, and the last button turns the page.
-  local perPage=#banks>#ui.bankButtons and #ui.bankButtons-1 or #ui.bankButtons
-  local pages=math.max(1,math.ceil(#banks/perPage))
-  local page=math.min(db.ui.page or 1,pages)
-  db.ui.page=page
-  for i,b in ipairs(ui.bankButtons) do
-    local entry=banks[(page-1)*perPage+i]
-    b.pages=nil
-    if i>perPage then entry=nil end
-    b:SetShown(entry~=nil)
-    if i>perPage then
-      b.pages=pages; b:SetText('More '..page..'/'..pages); b:UnlockHighlight(); b:Show()
-    elseif entry then
-      b.id=entry.id; b:SetText(displayName(entry.name))
-      if entry.id==db.ui.bank then b:LockHighlight() else b:UnlockHighlight() end
-    end
+  local open=GV.guild() and GV.activeRequestCount() or 0
+  local tab=ui.tabs[2]
+  local text=open>0 and ('Requests ('..open..')') or 'Requests'
+  if tab:GetText()~=text then
+    tab:SetText(text)
+    if PanelTemplates_TabResize then pcall(PanelTemplates_TabResize,tab,0) end
   end
-  local showRequests=db.ui.mode=='requests'
-  for _,b in ipairs(ui.filterButtons) do
-    if b.filter==db.ui.filter and not showRequests then b:LockHighlight() else b:UnlockHighlight() end
-  end
-  local open=g and GV.activeRequestCount() or 0
-  ui.requestsButton:SetText(open>0 and ('Requests ('..open..')') or 'Requests')
-  if showRequests then ui.requestsButton:LockHighlight() else ui.requestsButton:UnlockHighlight() end
-  local snap=g and bank and g.banks[bank.id]
-  local list={}
-  if g and showRequests then
-    local me,term=myId(),(ui.search:GetText() or ''):lower()
-    ui.info:SetText(GV.isApprover(me) and 'You can approve or deny requests. Approved items are reserved until mailed.' or 'Ctrl-click an item in a bank to request it.')
-    for _,q in ipairs(GV.requestList()) do
-      local name,_,quality,icon=GV.itemInfo(q.item)
-      local label=q.count..'x '..(name or ('Item #'..q.item))
-      if term=='' or label:lower():find(term,1,true) or q.by:lower():find(term,1,true) then
-        list[#list+1]={id=q.item,name=label,quality=quality,icon=icon,request=q,owner=q.bank}
-      end
-    end
-    ui.empty:SetText(#list==0 and 'No requests.' or '')
-  elseif not g then
-    ui.info:SetText(''); ui.empty:SetText('Join a guild to see its bank.')
-  elseif not bank then
-    ui.info:SetText('')
-    ui.empty:SetText('No bank characters yet.\n\nThe guild master types |cffffd100/gbt bank add First Last|r, or an officer adds |cffffd100[GBT:First Last]|r to the guild info. Type |cffffd100/gbt add Name|r to follow one just for yourself.')
-  elseif not snap then
-    ui.info:SetText(displayName(bank.name))
-    ui.empty:SetText('Waiting for '..displayName(bank.name)..'\'s contents.\n\nThey arrive when the bank character, or a guildmate who has seen them, is online.')
-  else
-    local via=snap.via and (' via '..snap.via) or ''
-    local bankNote=(snap.bankStamp or 0)==0 and '  |cffff8040bank not opened yet|r' or ''
-    ui.info:SetText((GetCoinTextureString and GetCoinTextureString(snap.gold or 0) or ((snap.gold or 0)..'c'))..'   |cff909090updated '..ago(snap.stamp)..via..'|r'..bankNote)
-    local filter,term=db.ui.filter,(ui.search:GetText() or ''):lower()
-    -- Approved requests hold their items until mailed, so the All view shows what's still available.
-    local reserved=filter=='all' and GV.reserved(bank.id) or {}
-    local merged={}
-    if filter~='bank' then for id,count in pairs(snap.bags or {}) do merged[id]={bags=count,bank=0} end end
-    if filter~='bags' then
-      for id,count in pairs(snap.bank or {}) do merged[id]=merged[id] or {bags=0,bank=0}; merged[id].bank=count end
-    end
-    for id,counts in pairs(merged) do
-      local name,_,quality,icon=GV.itemInfo(id)
-      local label=name or ('Item #'..id)
-      if term=='' or label:lower():find(term,1,true) then
-        list[#list+1]={id=id,name=label,quality=quality,icon=icon,bags=counts.bags,bank=counts.bank,reserved=reserved[id] or 0}
-      end
-    end
-    table.sort(list,function(a,b) return a.name<b.name end)
-    ui.empty:SetText(#list==0 and (term~='' and 'Nothing matches.' or 'Empty.') or '')
-  end
-  local me=myId()
-  for i,item in ipairs(list) do
-    local r=GV.row(i)
-    local q=item.request
-    r.id,r.owner,r.request=item.id,item.owner or snap.owner,q
-    r.icon:SetTexture(item.icon or 'Interface\\Icons\\INV_Misc_QuestionMark')
-    r.name:SetText(item.name)
-    local color=ITEM_QUALITY_COLORS and item.quality and ITEM_QUALITY_COLORS[item.quality]
-    if color then r.name:SetTextColor(color.r,color.g,color.b) else r.name:SetTextColor(1,1,1) end
-    if (q and not isActive(q)) or (not q and item.bags+item.bank-item.reserved<=0) then r.name:SetTextColor(.5,.5,.5) end
-    r.where:ClearAllPoints()
-    for _,b in ipairs(r.actions) do b:Hide() end
-    if q then
-      local buttons={}
-      for _,spec in ipairs({{'Approve','approved'},{'Mailed','mailed'},{'Deny','denied'},{'Cancel','cancelled'}}) do
-        if #buttons<2 and GV.allowed(q,q.status,spec[2],me) then buttons[#buttons+1]=spec end
-      end
-      for n,spec in ipairs(buttons) do
-        local b=r.actions[3-#buttons+n-1]
-        b:SetText(spec[1]); b.status=spec[2]; b:Show()
-      end
-      r.where:SetPoint('RIGHT',-6-#buttons*62,0)
-      local stateText=({open='',approved=' · |cff40ff40approved|r'})[q.status] or (' · '..q.status)
-      r.where:SetText(displayName(q.by)..stateText)
-      r.count:SetText('')
-    else
-      r.where:SetPoint('RIGHT',-60,0)
-      local where={}
-      if item.bags>0 and db.ui.filter=='all' and item.bank>0 then where[#where+1]='bags '..item.bags; where[#where+1]='bank '..item.bank end
-      if item.reserved>0 then where[#where+1]='|cffff8040'..item.reserved..' reserved|r' end
-      r.where:SetText(table.concat(where,' · '))
-      r.count:SetText(math.max(0,item.bags+item.bank-item.reserved))
-    end
-    r:Show()
-  end
-  for i=#list+1,#rows do rows[i]:Hide() end
-  ui.content:SetHeight(math.max(1,#list*ROW_H))
+  local mode=db.ui.mode
+  if mode=='requests' then GV.refreshRequests()
+  elseif mode=='settings' then GV.refreshSettings()
+  elseif mode=='gm' then GV.refreshGM()
+  else GV.refreshItems() end
 end
-function GV.toggle()
-  if not window then GV.buildWindow() end
-  window:SetShown(not window:IsShown())
+
+-- Minimap button and the game's AddOns options ---------------------------------------------------------
+function GV.buildMinimapButton()
+  if ui.minimap or not Minimap then return end
+  local b=CreateFrame('Button','GuildBankToonsMinimapButton',Minimap)
+  b:SetSize(31,31); b:SetFrameStrata('MEDIUM'); b:SetFrameLevel(8)
+  b:SetHighlightTexture('Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight')
+  local back=b:CreateTexture(nil,'BACKGROUND'); back:SetSize(20,20); back:SetPoint('TOPLEFT',7,-5)
+  back:SetTexture('Interface\\Minimap\\UI-Minimap-Background')
+  local icon=b:CreateTexture(nil,'ARTWORK'); icon:SetSize(17,17); icon:SetPoint('TOPLEFT',7,-6)
+  icon:SetTexture('Interface\\Icons\\INV_Misc_Bag_10_Blue')
+  local border=b:CreateTexture(nil,'OVERLAY'); border:SetSize(53,53); border:SetPoint('TOPLEFT')
+  border:SetTexture('Interface\\Minimap\\MiniMap-TrackingBorder')
+  b:RegisterForDrag('LeftButton')
+  b:SetScript('OnDragStart',function(self) self:SetScript('OnUpdate',GV.dragMinimap) end)
+  b:SetScript('OnDragStop',function(self) self:SetScript('OnUpdate',nil) end)
+  b:SetScript('OnClick',function() GV.toggle() end)
+  b:SetScript('OnEnter',function(self)
+    GameTooltip:SetOwner(self,'ANCHOR_LEFT')
+    GameTooltip:AddLine('Guild Bank Toons')
+    local open=GV.guild() and GV.activeRequestCount() or 0
+    if open>0 then GameTooltip:AddLine(open..' active request'..(open==1 and '' or 's'),1,1,1) end
+    GameTooltip:AddLine('Click to open. Drag to move.',.6,.6,.6)
+    GameTooltip:Show()
+  end)
+  b:SetScript('OnLeave',function() GameTooltip:Hide() end)
+  ui.minimap=b
+  GV.placeMinimap()
 end
-function GuildBankToons_OnCompartmentClick() GV.toggle() end
+function GV.dragMinimap()
+  local mx,my=Minimap:GetCenter()
+  local x,y=GetCursorPosition()
+  local scale=Minimap:GetEffectiveScale()
+  local atan2=math.atan2 or math.atan
+  db.ui.minimapAngle=math.deg(atan2(y/scale-my,x/scale-mx))
+  GV.placeMinimap()
+end
+function GV.placeMinimap()
+  local b=ui.minimap
+  if not b then return end
+  local angle=math.rad(db.ui.minimapAngle or 205)
+  local radius=((Minimap:GetWidth() or 140)/2)+10
+  b:ClearAllPoints(); b:SetPoint('CENTER',Minimap,'CENTER',math.cos(angle)*radius,math.sin(angle)*radius)
+  b:SetShown(settings().minimap and true or false)
+end
+-- A page under the game's Options > AddOns that opens the Settings tab.
+function GV.registerOptions()
+  local panel=CreateFrame('Frame')
+  panel.name='Forever - Guild Bank Toons'
+  local title=label(panel,'GameFontNormalLarge'); title:SetPoint('TOPLEFT',16,-16); title:SetText(panel.name)
+  local text=label(panel,'GameFontHighlight','LEFT',true); text:SetPoint('TOPLEFT',16,-46); text:SetPoint('RIGHT',-16,0)
+  text:SetText('All of the addon\'s settings are on the Settings tab of its window. The guild master manages bank toons on the Guild Master tab.')
+  local open=button(panel,'Open settings',150); open:SetPoint('TOPLEFT',16,-84)
+  open:SetScript('OnClick',function()
+    for _,frame in ipairs({SettingsPanel,InterfaceOptionsFrame}) do
+      if frame and frame:IsShown() and HideUIPanel then HideUIPanel(frame) end
+    end
+    GV.open('settings')
+  end)
+  if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
+    Settings.RegisterAddOnCategory(Settings.RegisterCanvasLayoutCategory(panel,panel.name))
+  elseif InterfaceOptions_AddCategory then
+    InterfaceOptions_AddCategory(panel)
+  end
+end
 
 -- Item tooltips: "Guild bank (Bankalt): 40" on any item a bank character holds.
 function GV.addTooltipLines(tooltip,id,show)
-  if not db or not settings().tooltips or type(id)~='number' or isSecret(id) then return end
+  if not db or ui.ownTooltip or not settings().tooltips or type(id)~='number' or isSecret(id) then return end
   local g=GV.guild()
   if not g then return end
   local added=false
@@ -1316,25 +1916,14 @@ SlashCmdList.GUILDBANKTOONS=function(input)
   if command=='' then GV.toggle()
   elseif command=='sync' then GV.syncAll(); GV.askManaged(); log('Asked the guild for the latest bank contents.',true)
   elseif command=='status' then GV.status()
-  elseif command=='add' or command=='remove' then
-    local id=nameId(arg)
-    if not g or not id or arg=='' then log('Usage: /gbt '..command..' First Last (you must be in a guild).',true); return end
-    if command=='add' then
-      g.extra[id]=arg; log('Following '..arg..'. Run this on the bank character too, or have an officer tag it in the guild info.',true)
-    elseif g.managed[id] then
-      log(arg..' was set by the guild master, who can remove it with /gbt bank remove.',true); return
-    elseif g.tagged[id] then
-      log(arg..' is tagged in the guild info; an officer has to remove the tag there.',true); return
-    else
-      g.extra[id]=nil; log('Stopped following '..arg..'.',true)
-    end
-    GV.banksChanged()
+  elseif command=='add' or command=='remove' then GV.follow(arg,command=='add')
+  elseif command=='settings' or command=='options' or command=='config' then GV.open('settings')
+  elseif command=='gm' then GV.open('gm')
   elseif command=='bank' or command=='banks' then GV.bankCommand(arg)
   elseif command=='tag' then
     log('Add this to the guild info (Guild > Guild Information): |cffffd100[GBT:'..(arg~='' and arg or key())..']|r',true)
   elseif command=='requests' then
-    if not window then GV.buildWindow() end
-    db.ui.mode='requests'; window:Show(); requestUpdate()
+    GV.open('requests')
     local list=GV.requestList()
     for i,r in ipairs(list) do
       if isActive(r) then log(i..'. '..displayName(r.by)..': '..GV.describe(r)..' |cff909090('..STATUSES[r.status]:lower()..')|r',true) end
@@ -1345,9 +1934,9 @@ SlashCmdList.GUILDBANKTOONS=function(input)
     local item,after=arg:match('item:(%d+)[^%]]*%]|h|r%s*(.*)$')
     if not item then item,after=arg:match('^(%d+)%s*(.*)$') end
     local count,note=(after or ''):match('^(%d*)%s*(.-)$')
-    local bank=selectedBank(GV.bankList())
-    local owner=bank and ((g.banks[bank.id] and g.banks[bank.id].owner) or bank.name)
-    if not item or not owner then log('Usage: /gbt request [item link] 20 optional note (asks the bank selected in the window).',true); return end
+    if not item then log('Usage: /gbt request [item link] 20 optional note. Or click the item in the window.',true); return end
+    local owner=GV.bestToon(tonumber(item))
+    if not owner then log('No bank toon has that item available.',true); return end
     GV.createRequest(tonumber(item),tonumber(count) or 1,note,owner)
   elseif command=='approve' or command=='deny' or command=='mailed' or command=='cancel' then
     local status=({approve='approved',deny='denied',mailed='mailed',cancel='cancelled'})[command]
@@ -1379,7 +1968,7 @@ SlashCmdList.GUILDBANKTOONS=function(input)
     db.settings.quiet=not db.settings.quiet
     log('Quiet mode '..(db.settings.quiet and 'on' or 'off')..'.',true)
   else
-    log('/gbt opens the window; sync asks for the latest contents; status lists bank characters; bank add/remove/clear Name sets the guild\'s bank characters (guild master); requests lists requests; request [item] 20 note asks for something; approve/deny/mailed/cancel N updates one; mail N fills a mail at a mailbox; mailhelper and autofill toggle the mail helper; add/remove Name follows a bank character just for you; tag Name prints the guild info tag; whispers, companion, tooltips and quiet toggle those.',true)
+    log('Everything is in the window: /gbt opens it, /gbt settings and /gbt gm jump to those tabs. Also: sync asks for the latest contents; status lists bank characters; bank add/remove/clear Name sets the guild\'s bank characters (guild master); requests lists requests; request [item] 20 note asks for something; approve/deny/mailed/cancel N updates one; mail N fills a mail at a mailbox; mailhelper and autofill toggle the mail helper; add/remove Name follows a bank character just for you; tag Name prints the guild info tag; whispers, companion, tooltips and quiet toggle those.',true)
   end
 end
 
@@ -1411,6 +2000,8 @@ frame:SetScript('OnEvent',function(_,event,...)
     if register then register(PREFIX) end
     GV.hookTooltips()
     GV.hookMail()
+    GV.buildMinimapButton()
+    pcall(GV.registerOptions)
     requestRoster()
     log('v'..VERSION..' loaded. Type /gbt to open the guild bank.')
     -- Probe first so our name matches what guildmates see before the real sync goes out.
