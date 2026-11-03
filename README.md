@@ -100,12 +100,14 @@ The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/Guild
 1. Copy the `GuildBankToons` folder into your AddOns folder (the folder keeps that short name; the game lists it as *Forever - Guild Bank Toons*):
    - WoW Forever: `World of Warcraft/_forever_/Interface/AddOns/GuildBankToons`
    - Classic Era: `World of Warcraft/_classic_era_/Interface/AddOns/GuildBankToons`
+   - Retail: `World of Warcraft/_retail_/Interface/AddOns/GuildBankToons`
 2. Restart the game (or `/reload`) and enable *Forever - Guild Bank Toons* on the character select AddOns screen.
 
 ## Compatibility
 
 - **WoW Forever** (`GuildBankToons_Forever.toc`, interface 16001 from the beta) is the main target. It uses the modern container and item APIs and holds guild messages while the game blocks addon chat. If Forever launches with a different interface number, update the TOC.
 - **Characters are identified by first name and surname only.** Any realm the game adds to a name is ignored. The game may report only your first name at login, so each character learns its full name from its first message to the guild a couple of seconds in; `/gbt status` shows the name it's using.
+- **Retail** (`GuildBankToons_Mainline.toc`, Midnight interface 120000–120007) loads the same file, mainly so you can try the window on a live client. If the game calls it out of date, tick *Load out of date AddOns* on the AddOns screen, or update the number from `/dump select(4, GetBuildInfo())`. Names on retail carry a realm, which the addon ignores, so two guildmates with the same name on different realms count as one.
 - **Classic Era** (`GuildBankToons_Vanilla.toc`, interface 11509) runs from the same file, but realms are ignored there too, so two guildmates with the same name on different connected realms would be treated as one character.
 - The bank scan covers the Classic bank layout and modern bank tabs; containers a client doesn't have are skipped.
 

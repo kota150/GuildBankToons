@@ -1085,9 +1085,12 @@ function GV.money(copper)
 end
 -- A scrolling list that only builds the rows that fit, so long banks stay quick. build(row) makes a row's
 -- parts once; draw(row,entry) fills it. Rows sit in `parent`; the scroll bar takes `gutter` on the right.
+-- Scroll templates on some clients find their scroll bar by the frame's global name, so each list gets one.
+local listCount=0
 function GV.makeList(parent,rowHeight,build,draw,gutter)
   local list={rows={},data={}}
-  local scroll=GV.make('ScrollFrame',parent,{'FauxScrollFrameTemplate'})
+  listCount=listCount+1
+  local scroll=GV.make('ScrollFrame',parent,{'FauxScrollFrameTemplate'},'GuildBankToonsList'..listCount)
   scroll:SetPoint('TOPLEFT'); scroll:SetPoint('BOTTOMRIGHT',-(gutter or 26),0)
   local function update() list:Update() end
   scroll:SetScript('OnVerticalScroll',function(self,offset)
@@ -1517,7 +1520,7 @@ function GV.follow(name,on)
   return true
 end
 function GV.buildSettingsPage(page)
-  local scroll=GV.make('ScrollFrame',page,{'UIPanelScrollFrameTemplate'})
+  local scroll=GV.make('ScrollFrame',page,{'UIPanelScrollFrameTemplate'},'GuildBankToonsSettingsScroll')
   scroll:SetPoint('TOPLEFT'); scroll:SetPoint('BOTTOMRIGHT',-26,0)
   local c=CreateFrame('Frame',nil,scroll); c:SetSize(480,700)
   scroll:SetScrollChild(c)
