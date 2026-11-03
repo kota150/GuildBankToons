@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+._*
+
+# Companion secrets and state
+companion/guildbanktoons.json
+companion/.guildbanktoons_state.json
+__pycache__/
+
+# Release builds
+*.zip
+.release/

@@ -1,0 +1,9 @@
+## Interface: 11509
+## Title: |cffd8aa55Forever - Guild Bank Toons|r
+## Notes: Shares your guild bank characters' bags, bank and gold with the whole guild, even while they're offline
+## Author: Kota150
+## Version: @project-version@
+## SavedVariables: GuildBankToonsDB
+## IconTexture: Interface\Icons\INV_Misc_Bag_10_Blue
+
+GuildBankToons.lua

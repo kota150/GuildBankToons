@@ -1,0 +1,8 @@
+{
+  "webhook": "https://discord.com/api/webhooks/<id>/<token>",
+  "wow_dir": "/Applications/World of Warcraft",
+  "account": "",
+  "guild": "",
+  "link_base": "",
+  "interval": 15
+}

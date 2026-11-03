@@ -1,0 +1,12 @@
+# Build settings for the BigWigs packager.
+package-as: GuildBankToons
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
+# Repo-only files that don't belong in the addon download
+ignore:
+  - companion
+  - tests
+  - README.md
