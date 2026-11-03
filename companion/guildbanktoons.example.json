@@ -4,5 +4,8 @@
   "account": "",
   "guild": "",
   "link_base": "",
+  "requests_webhook": "",
+  "ping_role": "",
+  "approval_ping": "",
   "interval": 15
 }

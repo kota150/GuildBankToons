@@ -2,7 +2,9 @@
 """Forever - Guild Bank Toons Discord companion.
 
 Reads the addon's SavedVariables (GuildBankToons.lua) file (written when you log out or /reload) and keeps one Discord
-message per guild bank character up to date through a webhook. Any guildmate running the addon has a
+message per guild bank character up to date through a webhook. New item requests get their own message
+(optionally pinging an officer role), updated when approved, mailed or denied, and approvals post a
+separate message that can ping whoever mails for the bank. Any guildmate running the addon has a
 copy of the bank, so anyone can run this, not just whoever plays the bank character.
 
 Python 3.8+, standard library only.
@@ -20,6 +22,7 @@ import datetime
 import glob
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -207,21 +210,22 @@ def money(copper):
 
 
 def designated(guild):
-    """Bank characters the guild has designated: tagged in guild info, or followed with /gbt add."""
+    """Bank characters the guild has designated: set by the guild master, tagged in guild info, or followed with /gbt add."""
     ids = {}
-    for source in ("tagged", "extra"):
+    for source in ("managed", "tagged", "extra"):
         for bank_id, name in (guild.get(source) or {}).items():
             ids.setdefault(bank_id, name)
     return ids
 
 
-def item_lines(items, names, link_base):
+def item_lines(items, names, link_base, reserved=None):
     rows = []
     for item_id, count in (items or {}).items():
         info = names.get(item_id) or names.get(str(item_id)) or {}
         name = info.get("n") or f"Item #{item_id}"
         label = f"[{name}]({link_base}{item_id})" if link_base else name
-        rows.append((name.lower(), f"{label} ×{count}"))
+        held = (reserved or {}).get(item_id, 0)
+        rows.append((name.lower(), f"{label} ×{count}" + (f" ({held} reserved)" if held else "")))
     rows.sort()
     return [text for _, text in rows]
 
@@ -238,7 +242,7 @@ def fit(lines, limit):
     return "\n".join(out) or "Empty."
 
 
-def build_message(guild_name, snap, names, link_base):
+def build_message(guild_name, snap, names, link_base, reserved=None):
     owner = snap.get("owner", "?")
     stamp = int(snap.get("stamp") or 0)
     bank_stamp = int(snap.get("bankStamp") or 0)
@@ -254,7 +258,7 @@ def build_message(guild_name, snap, names, link_base):
         summary["timestamp"] = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat()
     embeds = [summary]
     budget = MESSAGE_LIMIT - len(summary["title"]) - len(summary["description"]) - len(footer)
-    sections = [(title, item_lines(snap.get(field), names, link_base)) for title, field in (("Bags", "bags"), ("Bank", "bank"))]
+    sections = [(title, item_lines(snap.get(field), names, link_base, reserved)) for title, field in (("Bags", "bags"), ("Bank", "bank"))]
     sections = [(title, lines) for title, lines in sections if lines]
     for n, (title, lines) in enumerate(sections):
         # Split what's left evenly; a short first section leaves more room for the next.
@@ -263,6 +267,75 @@ def build_message(guild_name, snap, names, link_base):
         budget -= len(text) + len(title) + 10
         embeds.append({"title": f"{title} ({len(lines)})", "description": text, "color": 0x4A6B3A})
     return {"username": "Guild Bank", "embeds": embeds, "allowed_mentions": {"parse": []}}
+
+
+STATUS_TEXT = {"approved": "✅ Approved", "denied": "❌ Denied", "mailed": "📬 Mailed", "cancelled": "🚫 Cancelled"}
+FINAL = {"denied", "mailed", "cancelled"}
+
+
+def short(name):
+    return (name or "?").split("-")[0]
+
+
+def name_id(name):
+    """Same identity the addon uses: the name without any -Realm, ignoring case and spaces."""
+    return short(name).replace(" ", "").lower()
+
+
+def mentions(text):
+    """allowed_mentions for the <@user> and <@&role> mentions in text, so only those ping."""
+    users = re.findall(r"<@!?(\d+)>", text or "")
+    roles = re.findall(r"<@&(\d+)>", text or "")
+    return {"parse": [], "users": users, "roles": roles}
+
+
+def request_line(req, names, link_base):
+    item_id = req.get("item")
+    info = names.get(item_id) or names.get(str(item_id)) or {}
+    name = info.get("n") or f"Item #{item_id}"
+    item = f"[{name}]({link_base}{item_id})" if link_base else f"**{name}**"
+    line = f"📦 **{short(req.get('by'))}** requests **{req.get('count')}×** {item} from **{short(req.get('bank'))}**"
+    if req.get("note"):
+        line += f' ("{req["note"]}")'
+    return line
+
+
+def build_request_message(req, names, link_base, ping_role):
+    """One Discord message per request: pings the officer role while waiting for approval, shows the
+    approval while it waits to be mailed, and is struck through once mailed, denied or cancelled."""
+    line = request_line(req, names, link_base)
+    status = req.get("status")
+    if status == "open":
+        mention = f"<@&{ping_role}> " if ping_role else ""
+        return {"username": "Guild Bank", "content": mention + line, "allowed_mentions": mentions(mention)}
+    actor = short(req.get("actor"))
+    if status == "approved":
+        text = f"{line}\n✅ Approved by {actor}, waiting for {short(req.get('bank'))} to mail it"
+        return {"username": "Guild Bank", "content": text, "allowed_mentions": {"parse": []}}
+    closed = f"{STATUS_TEXT.get(status, status)} by {actor}"
+    if status == "mailed" and req.get("approvedBy"):
+        closed += f" (approved by {short(req['approvedBy'])})"
+    return {"username": "Guild Bank", "content": f"~~{line}~~\n{closed}", "allowed_mentions": {"parse": []}}
+
+
+def build_approval_ping(req, names, link_base, approval_ping):
+    """A separate message when a request is approved: edits don't notify anyone, new messages do."""
+    item_id = req.get("item")
+    info = names.get(item_id) or names.get(str(item_id)) or {}
+    name = info.get("n") or f"Item #{item_id}"
+    text = (f"{approval_ping + ' ' if approval_ping else ''}✅ Approved by {short(req.get('actor'))}: "
+            f"**{short(req.get('bank'))}**, please mail **{req.get('count')}× {name}** to **{short(req.get('by'))}**.")
+    return {"username": "Guild Bank", "content": text, "allowed_mentions": mentions(approval_ping)}
+
+
+def reserved_by_bank(guild):
+    """bank id -> {item id: count} approved but not yet mailed."""
+    out = {}
+    for req in (guild.get("requests") or {}).values():
+        if req.get("status") == "approved":
+            items = out.setdefault(name_id(req.get("bank")), {})
+            items[req.get("item")] = items.get(req.get("item"), 0) + int(req.get("count") or 0)
+    return out
 
 
 # --- Discord webhook -------------------------------------------------------------------------------
@@ -308,23 +381,50 @@ def run_once(args, state):
         if args.guild and args.guild.lower() not in guild_name.lower():
             continue
         banks = guild.get("banks") or {}
+        reserved = reserved_by_bank(guild)
         for bank_id in designated(guild):
             snap = banks.get(bank_id)
             if not snap:
                 continue
             slot = f"{guild_name}|{bank_id}"
             seen = state.setdefault(slot, {})
-            if not args.force and seen.get("stamp") == snap.get("stamp") and seen.get("hash") == snap.get("hash"):
+            held = {str(k): v for k, v in sorted(reserved.get(bank_id, {}).items())}
+            if (not args.force and seen.get("stamp") == snap.get("stamp") and seen.get("hash") == snap.get("hash")
+                    and seen.get("reserved", {}) == held):
                 continue
-            payload = build_message(guild_name, snap, names, args.link_base)
+            payload = build_message(guild_name, snap, names, args.link_base, reserved.get(bank_id))
             if args.dry_run:
                 print(json.dumps(payload, indent=2, ensure_ascii=False))
                 continue
             seen["message"] = publish(args.webhook, seen.get("message"), payload)
-            seen["stamp"], seen["hash"] = snap.get("stamp"), snap.get("hash")
+            seen["stamp"], seen["hash"], seen["reserved"] = snap.get("stamp"), snap.get("hash"), held
             changed += 1
             print(f"Updated Discord for {snap.get('owner')} ({guild_name}).")
             time.sleep(1)  # stay well inside the webhook rate limit
+        if args.no_requests:
+            continue
+        posted = state.setdefault("requests", {})
+        requests = sorted((guild.get("requests") or {}).items(), key=lambda kv: kv[1].get("updated") or 0)
+        for request_id, req in requests:
+            seen, status = posted.get(request_id), req.get("status")
+            # Finished before this PC ever saw it: nothing to ping about.
+            if not args.force and ((seen is None and status in FINAL) or (seen and seen.get("status") == status)):
+                continue
+            webhook = args.requests_webhook or args.webhook
+            payloads = [build_request_message(req, names, args.link_base, args.ping_role)]
+            if status == "approved":
+                payloads.append(build_approval_ping(req, names, args.link_base, args.approval_ping))
+            if args.dry_run:
+                for payload in payloads:
+                    print(json.dumps(payload, indent=2, ensure_ascii=False))
+                continue
+            message = publish(webhook, seen and seen.get("message"), payloads[0])
+            if status == "approved":
+                publish(webhook, None, payloads[1])
+            posted[request_id] = {"message": message, "status": status, "updated": req.get("updated")}
+            changed += 1
+            print(f"Posted request {req.get('count')}x item {req.get('item')} by {req.get('by')} ({status}).")
+            time.sleep(1)
     if not args.dry_run:
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
@@ -341,6 +441,13 @@ def main():
     p.add_argument("--guild", default=config.get("guild"), help="only post guilds whose name contains this")
     p.add_argument("--link-base", default=config.get("link_base", ""),
                    help="item link prefix, e.g. https://www.wowhead.com/classic/item= (blank: plain names)")
+    p.add_argument("--requests-webhook", default=config.get("requests_webhook"),
+                   help="separate webhook (channel) for requests; defaults to --webhook")
+    p.add_argument("--ping-role", default=config.get("ping_role"), help="Discord role ID to ping for new requests")
+    p.add_argument("--approval-ping", default=config.get("approval_ping"),
+                   help='mention for approvals, e.g. "<@123>" (a user) or "<@&456>" (a role)')
+    p.add_argument("--no-requests", action="store_true", default=config.get("no_requests", False),
+                   help="don't post requests")
     p.add_argument("--watch", action="store_true", help="keep running and update after every save")
     p.add_argument("--interval", type=int, default=config.get("interval", 15), help="seconds between checks")
     p.add_argument("--dry-run", action="store_true", help="print the messages instead of posting")

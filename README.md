@@ -6,13 +6,16 @@ Built for **WoW Forever**, and also works on **Classic Era**.
 
 ## Setting up
 
-1. **Pick the bank character(s).** An officer adds a tag to the guild info text (Guild → Guild Information):
+1. **Pick the bank character(s).** The guild can have as many as it likes. The easiest way: the **guild master** types, once per bank character:
    ```
-   [GBT:Bankalt-YourRealm]
+   /gbt bank add Vault Keeper
    ```
-   Add one tag per bank character. `/gbt tag Name-Realm` prints the tag for you. If your officers don't want to edit the guild info, each member (and the bank character) can type `/gbt add Bankalt-YourRealm` instead.
+   The list goes to every guildmate running the addon and is passed along like the bank contents, so people who log in while the guild master is offline still get it. `/gbt bank remove Vault Keeper` takes one off, `/gbt bank clear` empties the list, and `/gbt bank list` shows it to anyone. Only the guild master (rank 0) can change it, up to 20 bank characters.
+
+   Alternatively, an officer can add a tag per bank character to the guild info text (Guild → Guild Information), for example `[GBT:Vault Keeper]`; `/gbt tag` prints it for you. Use the bank character's full name, first name and surname. Case and spaces don't matter, and no realm is needed. Both ways can be used together. Any member can also type `/gbt add Vault Keeper` to follow a bank character just for themselves.
 2. **Log in on the bank character with the addon enabled.** Its bags are read straight away. The bank can only be read while it's open, so **visit the banker once**. After that the bank contents carry over until the next visit.
-3. That's it. Guildmates type `/gbt` to browse.
+3. **Optional: say who the officers are.** By default ranks 0 and 1 (guild master and the rank below) handle requests. To change it, add `[GBT:officers=2]` to the guild info, which makes ranks 0–2 officers.
+4. That's it. Guildmates type `/gbt` to browse.
 
 ## How offline sharing works
 
@@ -20,12 +23,29 @@ Built for **WoW Forever**, and also works on **Classic Era**.
 - Every guildmate stores the newest copy they've seen. On login each client says "here's the copy I have". Anyone holding a newer one sends it, and anyone holding an older one asks for it. One random-delayed answer serves the whole guild.
 - As long as *someone* who saw the latest copy is online, it reaches everyone else. The window shows how old the copy is and who relayed it.
 
-**Trust.** Addon messages can't be signed, so a guildmate with a modified addon could relay a fake copy while the bank character is offline. The addon limits the damage: copies are only accepted for designated bank characters, stamps far in the future are rejected, and the moment the real bank character logs in its own copy wins and replaces the fake everywhere.
+**Trust.** Addon messages can't be signed, so a guildmate with a modified addon could relay a fake copy while the bank character is offline. The addon limits the damage: copies are only accepted for designated bank characters, stamps far in the future are rejected, and the moment the real bank character logs in its own copy wins and replaces the fake everywhere. The guild master's bank list works the same way: only a list naming the current guild master is accepted, and the guild master's own list replaces any fake one when they log in.
+
+## Requests
+
+Guildmates ask for items, an approver says yes or no, and the bank character mails what was approved.
+
+1. **Ask.** Ctrl-click an item in the window, enter how many (and a note if you like, e.g. `20 for my alt`), and press Request. `/gbt request [item link] 20 note` does the same from chat.
+2. **Approvers are told.** Officers, the guild master and bank characters can approve. The ones running the addon get a chat alert with a sound right away. After a few seconds, the requester's game whispers up to 3 online officers who *didn't* acknowledge it, which are the ones without the addon. If nobody who can approve is online, the request waits, and they see "N waiting for approval" when they log in.
+3. **Approve or deny.** In the window's **Requests** view (or `/gbt approve N`, `/gbt deny N`), press **Approve** or **Deny**. The requester can **Cancel** while it's still waiting.
+4. **Approved items are reserved.** An approved request takes its items off the available counts in the window, tooltips and Discord ("15 (30 reserved)"), so nobody else is promised the same stack. It stays in the list as *approved* until it's mailed. The requester and the bank character are both told, and Discord posts a separate message that can ping whoever mails for the bank.
+5. **The bank character mails it.** At a mailbox, the **mail helper** opens beside the mail window with every approved request for this bank character. **Fill** switches to Send Mail, addresses it to the requester, fills the subject and note, and attaches exactly the right count from your bags, splitting a stack when needed. Check it and press **Send** (the helper's or the game's). Once the mail goes through, the request is marked **mailed** and the reservation is released. Mailed it some other way? Press **Mailed** in the Requests view.
+
+The game only sends mail on a click, so the last step is always yours. Turn on `/gbt autofill` to have the first approved request filled as soon as you open a mailbox. Items have to be in your bags to attach; the helper says so if some are still in the bank.
+
+Requests sync like the bank contents: everyone keeps a copy, and a guildmate logging in catches up from whoever is online. Requests only move forward (waiting → approved → mailed, or denied or cancelled), and each step is only accepted from someone allowed to take it: approvals and denials from officers, the guild master or a bank character, mailed from that request's bank character, cancel from the requester. Anything else is ignored. Active requests expire after 30 days, finished ones after 7.
 
 ## Features
 
-- **Browse window** (`/gbt`): one button per bank character, search, All / Bags / Bank filters, gold, and how long ago the snapshot was taken.
-- **Shift-click** an item to link it in chat. **Ctrl-click** to open a whisper to the bank character asking for it.
+- **Browse window** (`/gbt`): one button per bank character (with a **More** button to page through when there are more than five), search, All / Bags / Bank filters, gold, and how long ago the snapshot was taken.
+- **Shift-click** an item to link it in chat. **Ctrl-click** to request it.
+- **Available counts**: the All view shows what's left after approved requests, with the reserved amount alongside.
+- **Requests view**: waiting requests first, then approved ones waiting to be mailed, then recently finished ones, with Approve / Deny / Mailed / Cancel buttons for whoever can use them.
+- **Mail helper** at mailboxes on bank characters.
 - **Item tooltips** show "Guild bank (Bankalt): 40" anywhere you hover that item.
 
 ## Commands
@@ -35,8 +55,19 @@ Built for **WoW Forever**, and also works on **Classic Era**.
 | `/gbt` | Open or close the window |
 | `/gbt sync` | Ask the guild for the latest contents |
 | `/gbt status` | List bank characters, how old each copy is, and message counters |
-| `/gbt add Name-Realm` / `/gbt remove Name-Realm` | Follow a bank character just for you |
-| `/gbt tag Name-Realm` | Print the guild info tag |
+| `/gbt bank add First Last` / `bank remove First Last` / `bank clear` | Set the guild's bank characters for everyone (guild master only) |
+| `/gbt bank list` | Show the bank characters the guild master set |
+| `/gbt add First Last` / `/gbt remove First Last` | Follow a bank character just for you |
+| `/gbt tag First Last` | Print the guild info tag |
+| `/gbt requests` | Show requests (numbered in chat) |
+| `/gbt request [item link] 20 note` | Request items from the bank selected in the window |
+| `/gbt approve N` / `deny N` | Approve or deny request N (officers, guild master, bank characters) |
+| `/gbt mailed N` | Mark approved request N mailed (bank character) |
+| `/gbt cancel N` | Cancel your own request while it's waiting |
+| `/gbt mail N` | At a mailbox, fill a mail for request N (or the first approved one) |
+| `/gbt mailhelper`, `/gbt autofill` | Toggle the mail helper, and filling the first request when a mailbox opens |
+| `/gbt whispers` | Toggle whispering officers who don't have the addon |
+| `/gbt companion` | Toggle the "reload to post to Discord" prompt (turn on where the Discord companion runs) |
 | `/gbt tooltips`, `/gbt quiet` | Toggle tooltip lines and chat messages |
 
 ## Discord
@@ -56,6 +87,10 @@ Any guildmate who runs the addon has a copy, so the script doesn't have to run o
    python3 companion/guildbanktoons_discord.py --watch
    ```
 
+**Requests on Discord.** Each new request gets its own message, which can ping an officer role (`ping_role`). When it's approved, that message shows who approved it, and a second message goes out saying the bank character should mail it. Set `approval_ping` to ping someone there, as `<@USER_ID>` for a person or `<@&ROLE_ID>` for a role. Once it's mailed, denied or cancelled, the first message is struck through ("📬 Mailed by Vault Keeper (approved by Olivia Stone)"). The bank character's message lists reserved amounts next to its items. To get an ID, enable Developer Mode in Discord, then right-click the user or role → Copy ID. Set `requests_webhook` to post requests in a different channel. Requests that finished before your PC saw them aren't posted.
+
+Because the script only sees what your game has saved, the ping arrives the next time *your* game saves: on logout or `/reload`. On the PC running the script, type `/gbt companion` so the addon offers a one-click reload whenever requests change.
+
 The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/GuildBankToons.lua` (or `_classic_era_`) on its own; set `wow_dir`, `account` or `savedvars` in the config if yours lives elsewhere. Set `link_base` (for example `https://www.wowhead.com/classic/item=`) to turn item names into links. It needs Python 3.8 or newer and nothing else.
 
 ## Installing
@@ -67,13 +102,14 @@ The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/Guild
 
 ## Compatibility
 
-- **WoW Forever** (`GuildBankToons_Forever.toc`, interface 16001 from the beta) is the main target. It uses the modern container and item APIs, supports first and last names, and holds guild messages while the game blocks addon chat. If Forever launches with a different interface number, update the TOC.
-- **Classic Era** (`GuildBankToons_Vanilla.toc`, interface 11509) runs from the same file.
+- **WoW Forever** (`GuildBankToons_Forever.toc`, interface 16001 from the beta) is the main target. It uses the modern container and item APIs and holds guild messages while the game blocks addon chat. If Forever launches with a different interface number, update the TOC.
+- **Characters are identified by first name and surname only.** Any realm the game adds to a name is ignored. The game may report only your first name at login, so each character learns its full name from its first message to the guild a couple of seconds in; `/gbt status` shows the name it's using.
+- **Classic Era** (`GuildBankToons_Vanilla.toc`, interface 11509) runs from the same file, but realms are ignored there too, so two guildmates with the same name on different connected realms would be treated as one character.
 - The bank scan covers the Classic bank layout and modern bank tabs; containers a client doesn't have are skipped.
 
 ## Development
 
-`tests/sync_sim.py` runs several simulated clients on one guild channel (direct sync, relaying while the bank character is offline, catching up, and a forged copy being replaced):
+`tests/sync_sim.py` runs several simulated clients on one guild channel (direct sync, relaying while the bank character is offline, catching up, a forged copy being replaced, the guild master's bank list reaching everyone and resisting fakes, and requests: alerts, whispers only to officers without the addon, approvals only from approvers, reserved counts, the mail helper attaching the exact count with one split, mailing closing the request, stale copies not reopening it, cancelling, and catching up at login):
 
 ```bash
 pip install lupa
