@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Catching up asks one guildmate: those with newer copies send a one-line offer, and after 5 seconds the client asks only the one with the newest copy, falling back to the next newest if they don't start within 2 seconds. Sending is paced to the game's addon-message limit, with short messages ahead of long transfers.
 - Donations by mail: a Donate panel beside the mail window fills in a donation to a bank toon, and a public Donations tab logs every donation. The bank toon confirms each one when it opens its mailbox, and also logs mail from guildmates without the addon.
 - Bank tab laid out like a bag: item slots with icons, quality borders and counts, gold along the bottom, and a List view for each toon's share.
 - Built around WoW Forever: the default TOC targets Forever (interface 16001), and trial accounts, which Forever blocks from sending addon messages, get a clear browse-only mode.

@@ -118,7 +118,7 @@ class Client:
         if not b: return None
         return dict(stamp=b.stamp,hash=b.hash,via=b.via,gold=b.gold,bags=dict(b.bags.items()) if b.bags else {},bank=dict(b.bank.items()) if b.bank else {})
 class Bus:
-    def __init__(s): s.clients=[]; s.timers=[]; s.count=0; s.ranks={}; s.always_online=set()
+    def __init__(s): s.clients=[]; s.timers=[]; s.count=0; s.ranks={}; s.always_online=set(); s.log=[]
     def roster(s):
         return sorted(s.ranks)
     def member(s,i):
@@ -126,7 +126,8 @@ class Bus:
         online=name in s.always_online or any(c.online and c.name==name for c in s.clients)
         return (name+"-Nek'Rosh",'',s.ranks[name],0,'','','','',online)
     def send(s,frm,p,m):
-        s.count+=1
+        s.count+=1; s.log.append((frm.name,m))
+        if getattr(frm,'mute',None) and frm.mute(m): return
         sender=frm.name+'-Nek\'Rosh'
         for c in s.clients:
             if c.online: c.fire('CHAT_MSG_ADDON',p,m,'GUILD',sender)
@@ -354,6 +355,34 @@ GBT(m1).open('donations'); bus.run(1); GBT(m1).refreshDonations()
 GBT(m1).open('items'); m1.L.globals().GuildBankToonsDB.ui.view='grid'; GBT(m1).refreshItems()
 m1.L.globals().GuildBankToonsDB.ui.view='list'; GBT(m1).refreshItems()
 check('donations tab and both bank views draw', True)
+
+# --- asking for the newest copy: offers, one ask, fallback ---
+def since(mark,prefix): return [(who,m) for who,m in bus.log[mark:] if m.startswith(prefix)]
+def vk(c): return c.L.globals().GuildBankToonsDB.guilds["Verdant"].banks
+bank.logout(); bus.run(2)
+newest=vk(m1).vaultkeeper.stamp
+vk(officer).vaultkeeper.stamp=newest-10
+vk(m2).vaultkeeper=None
+mark=len(bus.log); slash(m2,'sync'); bus.run(25)
+asks=since(mark,'G|Vault Keeper|')
+check('the newest copy is asked for, not an older one', len(asks)==1 and 'Olivia' not in asks[0][1])
+check('only that one guildmate sends the bank copy', len(since(mark,'B|Vault Keeper|'))==1 and m2.snap()['stamp']==newest)
+check('at most 3 guildmates offer the newest copy', len([m for _,m in since(mark,'O|Vault Keeper|') if m.split('|')[2]==str(newest)])<=3)
+# Whoever is asked first goes quiet: their copy never goes out.
+quiet={}
+def mute(c):
+    def drop(m):
+        if m.startswith('G|Vault Keeper|') and 'who' not in quiet: quiet['who']=m.split('|')[-1]
+        return quiet.get('who')==c.name and m[:2] in ('B|','I|','E|')
+    return drop
+for c in bus.clients: c.mute=mute(c)
+vk(m2).vaultkeeper=None
+mark=len(bus.log); slash(m2,'sync'); bus.run(30)
+asks=since(mark,'G|Vault Keeper|')
+check('if the chosen guildmate doesn\'t answer in 2 seconds, the next newest is asked',
+      len(asks)==2 and asks[0][1]!=asks[1][1] and m2.snap() and m2.snap()['stamp']==newest)
+for c in bus.clients: c.mute=None
+bank.login(); bus.run(20)
 
 # --- trial accounts (Forever blocks their addon messages) ---
 before=bus.count; known=len(requests_of(officer))

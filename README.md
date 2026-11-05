@@ -16,7 +16,9 @@ Built for **WoW Forever**. It also loads on Classic Era and retail, but Forever 
 ## How offline sharing works
 
 - The bank character records a snapshot with a server-time stamp whenever its bags, bank or gold change, and pushes it to everyone online.
-- Every guildmate stores the newest copy they've seen. On login each client says "here's the copy I have". Anyone holding a newer one sends it, and anyone holding an older one asks for it. One random-delayed answer serves the whole guild.
+- Every guildmate stores the newest copy they've seen. On login each client says "here's the copy I have" for each bank toon, the guild master's list, and the requests and donations.
+- **Offers, then one ask.** Guildmates holding something newer reply with a one-line offer saying how new theirs is (at most 3 offers of the same copy, so there's always a backup). After 5 seconds the client picks the newest offer, preferring the bank toon's own copy on a tie, and asks just that guildmate to send it. If they haven't started within 2 seconds, it asks whoever has the next newest copy. Only one full copy is ever sent per catch-up.
+- **Paced to the game's limit.** Each player may send 10 addon messages in a burst, then 1 a second. The addon sends at that pace, and short messages (questions, offers, the copy someone is waiting for) go before long transfers.
 - As long as *someone* who saw the latest copy is online, it reaches everyone else. The window shows how old the copy is and who relayed it.
 
 **Trust.** Addon messages can't be signed, so a guildmate with a modified addon could relay a fake copy while the bank character is offline. The addon limits the damage: copies are only accepted for designated bank characters, stamps far in the future are rejected, and the moment the real bank character logs in its own copy wins and replaces the fake everywhere. The guild master's bank list works the same way: only a list naming the current guild master is accepted, and the guild master's own list replaces any fake one when they log in.
@@ -133,7 +135,7 @@ The bank scan covers both the Classic bank layout and modern bank tabs; containe
 
 ## Development
 
-`tests/sync_sim.py` runs several simulated clients on one guild channel (direct sync, relaying while the bank character is offline, catching up, a forged copy being replaced, the guild master's bank list reaching everyone and resisting fakes, donations sent, confirmed by the bank toon, logged from guildmates without the addon and protected from forged confirmations, and requests: alerts, whispers only to officers without the addon, approvals only from approvers, reserved counts, the mail helper attaching the exact count with one split, mailing closing the request, stale copies not reopening it, cancelling, and catching up at login):
+`tests/sync_sim.py` runs several simulated clients on one guild channel (direct sync, relaying while the bank character is offline, catching up, asking only the guildmate with the newest copy and falling back to the next one when they don't answer, a forged copy being replaced, the guild master's bank list reaching everyone and resisting fakes, donations sent, confirmed by the bank toon, logged from guildmates without the addon and protected from forged confirmations, and requests: alerts, whispers only to officers without the addon, approvals only from approvers, reserved counts, the mail helper attaching the exact count with one split, mailing closing the request, stale copies not reopening it, cancelling, and catching up at login):
 
 ```bash
 pip install lupa

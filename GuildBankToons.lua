@@ -25,12 +25,14 @@ local frame=CreateFrame('Frame')
 local window
 local ui={}
 local db
-local queue, timers, pending = {}, {}, {}
+-- Outgoing messages: urgent (small control messages, answers someone is waiting for) go before bulk.
+local queue, urgent, timers, pending = {}, {}, {}, {}
 local lastSent, lastSentAt = {}, {}
 local sent, received, rejected = 0, 0, 0
 local bankOpen, syncReady = false, false
 local updatePending, sinceUpdate = false, 0
-local sinceSend, sendFailures = 0, 0
+-- The game allows each addon prefix a burst of 10 messages, then 1 a second.
+local allowance, sendFailures = 10, 0
 
 -- WoW: Forever runs on the modern (Midnight-era) API where many Classic globals moved into C_ namespaces.
 -- Resolve each once so the same file runs on Classic Era and Forever.
@@ -302,10 +304,10 @@ end
 -- Messaging --------------------------------------------------------------------------------------
 -- Protocol (guild addon channel, '|' separated; origin is the bank character's name):
 --   V|me|version                  login probe; our own echo tells us the name others see on our messages
---   R|origin|stamp|hash           "this is the copy I hold of origin; send it if yours is newer"
+--   R|origin|stamp|hash           "this is the copy I hold of origin"; anyone with a newer one offers it
 --   B|origin|stamp|hash|gold|bankStamp|count, then I|origin|stamp|entries..., then E|origin|stamp
--- Anyone holding a snapshot answers, so it spreads while the bank character is offline. A random delay
--- plus cancelling when someone else answers first keeps one broadcast per request.
+-- Anyone holding a snapshot can send it, so it spreads while the bank character is offline. Who sends is
+-- settled by offers (O) and one ask (G): see "Asking for the newest copy" below.
 -- WoW: Forever blocks outgoing addon messages in some situations, such as combat in instances.
 function GV.messagingBlocked()
   local C=C_ChatInfo
@@ -326,10 +328,13 @@ function GV.isTrial()
   end
   return false
 end
-function GV.queue(payload)
+-- onSent runs once the message has actually gone out (it may wait behind others and the game's limit).
+function GV.queue(payload,isUrgent,onSent)
   if GV.isTrial() then return end
-  if #queue<500 then queue[#queue+1]=payload end
+  local lane=isUrgent and urgent or queue
+  if #lane<500 then lane[#lane+1]={payload,onSent} end
 end
+function GV.queued() return #queue+#urgent end
 -- Returns false when the client throttled the message so it's retried.
 function GV.rawSend(payload)
   if not (IsInGuild and IsInGuild()) then return true end
@@ -346,29 +351,32 @@ function GV.sendRequest(id)
   local snap=g.banks[id]
   local origin=(snap and snap.owner) or g.managed[id] or g.tagged[id] or g.extra[id]
   if not origin then return end
-  GV.queue('R|'..origin..'|'..(snap and snap.stamp or 0)..'|'..(snap and snap.hash or 0))
+  GV.queue('R|'..origin..'|'..(snap and snap.stamp or 0)..'|'..(snap and snap.hash or 0),true)
+  -- A bank toon's own copy is the real one, so it only announces it; everyone else collects offers.
+  if id~=myId() then GV.collect(origin) end
 end
-function GV.sendSnapshot(id)
+-- asked: someone asked us for it by name (G), so send it straight away even if we sent it recently.
+function GV.sendSnapshot(id,asked)
   local g=GV.guild()
   local snap=g and g.banks[id]
   if not snap or not snap.stamp then return end
   -- Guild messages reach everyone, so one broadcast answers every request that arrives meanwhile.
-  if lastSent[id]==snap.stamp and GetTime()-(lastSentAt[id] or 0)<30 then return end
+  if not asked and lastSent[id]==snap.stamp and GetTime()-(lastSentAt[id] or 0)<30 then return end
   lastSent[id],lastSentAt[id]=snap.stamp,GetTime()
   local origin,stamp=snap.owner,snap.stamp
   local entries=GV.entries(snap)
-  GV.queue(table.concat({'B',origin,stamp,snap.hash,snap.gold or 0,snap.bankStamp or 0,#entries},'|'))
+  GV.queue(table.concat({'B',origin,stamp,snap.hash,snap.gold or 0,snap.bankStamp or 0,#entries},'|'),asked)
   local head='I|'..origin..'|'..stamp..'|'
   local chunk,length={},#head
   for _,entry in ipairs(entries) do
     if length+#entry+1>250 then
-      GV.queue(head..table.concat(chunk,','))
+      GV.queue(head..table.concat(chunk,','),asked)
       chunk,length={},#head
     end
     chunk[#chunk+1]=entry; length=length+#entry+1
   end
-  if #chunk>0 then GV.queue(head..table.concat(chunk,',')) end
-  GV.queue('E|'..origin..'|'..stamp)
+  if #chunk>0 then GV.queue(head..table.concat(chunk,','),asked) end
+  GV.queue('E|'..origin..'|'..stamp,asked)
 end
 -- Ask for every bank character; a bank character announces its own copy the same way.
 function GV.syncAll()
@@ -385,6 +393,107 @@ function GV.outbid(id,stamp)
   GV.once('send:'..id,0.5,function() GV.sendSnapshot(id) end)
 end
 local function plausible(stamp) return stamp<=now()+MAX_FUTURE end
+
+-- Asking for the newest copy ------------------------------------------------------------------------
+-- An ask (R for a bank toon, S for the guild master's list, L for requests and donations) says what we hold.
+-- Guildmates holding something newer offer it with one small message (O), each after a short random wait,
+-- and stay quiet once 3 others have offered something at least as new (enough to have a backup). After 5 seconds the asker picks the
+-- newest offer (the bank toon's own, on a tie) and asks just that guildmate to send it (G). If they haven't
+-- started within 2 seconds of the ask going out, it asks whoever has the next newest copy.
+--   O|topic|stamp|hash        topic: a bank toon's name, *list (requests and donations) or *gm (bank list)
+--   G|topic|stamp|target      "target, send me your copy"; for *list, stamp is what we already hold
+local OFFER_WAIT,ANSWER_WAIT,ENOUGH_OFFERS=5,2,3
+local offersHeard={} -- topic id -> offers heard at least as new as ours since we planned to offer
+local collecting={} -- topic id -> {topic=, offers={}, since=, asked=, at=}
+local function topicId(topic) return topic:sub(1,1)=='*' and topic or nameId(topic) end
+-- The stamp (and hash) of what we hold on a topic.
+function GV.held(id)
+  local g=GV.guild()
+  if not g then return 0,0 end
+  if id=='*list' then return GV.newestStamp(),0 end
+  if id=='*gm' then return g.managedStamp or 0,0 end
+  local snap=g.banks[id]
+  return snap and snap.stamp or 0,snap and snap.hash or 0
+end
+function GV.collect(topic,since)
+  local id=topicId(topic)
+  if not id then return end
+  local c=collecting[id]
+  if c and GetTime()-c.at<30 then return end
+  collecting[id]={topic=topic,offers={},since=since,at=GetTime()}
+  GV.schedule('pick:'..id,OFFER_WAIT,function() GV.pickOffer(id) end)
+end
+function GV.pickOffer(id)
+  local c=collecting[id]
+  if not c then return end
+  local held=c.since or GV.held(id)
+  local best,at
+  for i,o in ipairs(c.offers) do
+    if o.stamp>held and (not best or o.stamp>best.stamp or (o.stamp==best.stamp and o.owner and not best.owner)) then best,at=o,i end
+  end
+  if not best then
+    collecting[id]=nil
+    if id=='*list' then GV.finishListening() end
+    return
+  end
+  table.remove(c.offers,at)
+  c.asked=best
+  GV.queue('G|'..c.topic..'|'..held..'|'..best.name,true,function()
+    GV.schedule('answer:'..id,ANSWER_WAIT,function() c.asked=nil; GV.pickOffer(id) end)
+  end)
+end
+-- What we asked for started arriving, from them or anyone else: stop waiting.
+function GV.answered(id,senderId,stamp)
+  local c=collecting[id]
+  if not c or not c.asked then return end
+  if senderId==c.asked.from or (stamp and stamp>=c.asked.stamp) then
+    GV.cancel('answer:'..id)
+    collecting[id]=nil
+  end
+end
+-- Someone asked about a topic and holds `theirs`: offer ours if it's newer. The bank toon offers its own
+-- copy first; everyone else waits a moment so one offer usually covers it.
+function GV.maybeOffer(topic,theirs)
+  local id=topicId(topic)
+  if not id or GV.held(id)<=theirs then return end
+  if not timers['offer:'..id] then offersHeard[id]=0 end
+  GV.once('offer:'..id,(id==myId()) and 0.2 or (0.3+math.random()*2.5),function()
+    local stamp,hash=GV.held(id)
+    if stamp>theirs and (offersHeard[id] or 0)<ENOUGH_OFFERS then GV.queue('O|'..topic..'|'..stamp..'|'..hash,true) end
+  end)
+end
+function GV.onOfferMessage(action,topic,rest,sender)
+  local g,id=GV.guild(),topicId(topic)
+  local senderId=(not isSecret(sender) and nameId(sender)) or nil
+  if not g or not id or not senderId or senderId==myId() then return end
+  if id:sub(1,1)~='*' and not GV.isBank(id) then return end
+  if action=='O' then
+    local stamp,hash=rest:match('^(%d+)|?(%d*)$')
+    stamp,hash=tonumber(stamp),tonumber(hash) or 0
+    if not stamp or not plausible(stamp) then return end
+    local mine,myHash=GV.held(id)
+    if stamp>=mine then offersHeard[id]=(offersHeard[id] or 0)+1 end
+    -- A different copy of our own bank is on offer (stale, or forged): ours replaces it.
+    if id==myId() then
+      if g.banks[id] and stamp>=mine and hash~=myHash then GV.outbid(id,stamp) end
+      return
+    end
+    local c=collecting[id]
+    if c and not c.asked then
+      c.offers[#c.offers+1]={from=senderId,name=displayName(sender),stamp=stamp,owner=senderMatches(sender,topic)}
+    end
+  elseif action=='G' then
+    local stamp,target=rest:match('^(%d+)|(.+)$')
+    if not stamp or nameId(target)~=myId() then return end
+    stamp=tonumber(stamp)
+    if id=='*list' then
+      -- Several guildmates logging in at once: answer for the one who has the least.
+      GV.listSince=math.min(GV.listSince or stamp,stamp)
+      GV.once('reqlist',0.1,function() local since=GV.listSince; GV.listSince=nil; GV.sendRequestList(since) end)
+    elseif id=='*gm' then GV.once('list:send',0.1,function() GV.sendManaged(true) end)
+    else GV.once('send:'..id,0.1,function() GV.sendSnapshot(id,true) end) end
+  end
+end
 function GV.onMessage(msg,sender)
   local action,origin,rest=msg:match('^(%u)|([^|]+)|?(.*)$')
   if not action then return end
@@ -394,6 +503,7 @@ function GV.onMessage(msg,sender)
   end
   if action=='Q' or action=='L' or action=='P' or action=='A' or action=='D' then GV.onRequestMessage(action,origin,rest,sender); return end
   if action=='S' or action=='M' then GV.onListMessage(action,origin,rest,sender); return end
+  if action=='O' or action=='G' then GV.onOfferMessage(action,origin,rest,sender); return end
   local g,id=GV.guild(),nameId(origin)
   if not g or not id or not GV.isBank(id) then return end
   local senderId=(not isSecret(sender) and nameId(sender)) or '?'
@@ -410,11 +520,12 @@ function GV.onMessage(msg,sender)
       -- Never outbid a forged far-future stamp: ours would jump past what everyone else accepts.
       if not mine or not plausible(stamp) then return end
       if stamp>myStamp or (stamp==myStamp and stamp>0 and hash~=myHash) then GV.outbid(id,stamp)
-      elseif stamp<myStamp then GV.once('send:'..id,0.5,function() GV.sendSnapshot(id) end) end
+      elseif stamp<myStamp then GV.maybeOffer(origin,stamp) end
     elseif stamp>myStamp then
+      -- They hold something newer than us: ask, and they'll offer it.
       if plausible(stamp) then GV.once('ask:'..id,1+math.random()*3,function() GV.sendRequest(id) end) end
     elseif stamp<myStamp then
-      GV.once('send:'..id,1+math.random()*4,function() GV.sendSnapshot(id) end)
+      GV.maybeOffer(origin,stamp)
     else
       -- Someone holding our copy already asked; whatever answers them reaches us too.
       GV.cancel('ask:'..id)
@@ -423,8 +534,9 @@ function GV.onMessage(msg,sender)
     local stamp,hash,gold,bankStamp,count=rest:match('^(%d+)|(%d+)|(%d+)|(%d+)|(%d+)$')
     stamp,hash=tonumber(stamp),tonumber(hash)
     if not stamp then return end
-    if stamp>=myStamp then GV.cancel('send:'..id) end
+    if stamp>=myStamp then GV.cancel('send:'..id); GV.cancel('offer:'..id) end
     if stamp>myStamp then GV.cancel('ask:'..id) end
+    GV.answered(id,senderId,stamp)
     if iAmOwner then
       if mine and plausible(stamp) and stamp>=myStamp and hash~=myHash then GV.outbid(id,stamp) end
       return
@@ -676,7 +788,7 @@ end
 function GV.sendRequestList(since)
   GV.pruneRequests(); GV.pruneDonations()
   local list=GV.changedSince(since or 0)
-  GV.queue('P|'..key()..'|'..#list)
+  GV.queue('P|'..key()..'|'..#list,true)
   for _,entry in ipairs(list) do GV.queue(entry[2]) end
 end
 -- After the login reply, send back anything we have that the replier didn't, then say what's waiting.
@@ -684,11 +796,13 @@ function GV.finishListening()
   local heard=listening
   listening=nil
   GV.cancel('listen')
-  if not heard or not heard.from then return end
+  if not heard then return end
   local me=myId()
   local waiting,toMail=0,0
-  for _,entry in ipairs(GV.changedSince(heard.since)) do
-    if (heard.seen[entry[3]] or -1)<entry[1] then GV.queue(entry[2]) end
+  if heard.from then
+    for _,entry in ipairs(GV.changedSince(heard.since)) do
+      if (heard.seen[entry[3]] or -1)<entry[1] then GV.queue(entry[2]) end
+    end
   end
   for _,r in ipairs(GV.requestList()) do
     if r.status=='open' then waiting=waiting+1 end
@@ -703,21 +817,21 @@ function GV.syncRequests()
   GV.pruneRequests(); GV.pruneDonations()
   local since=GV.newestStamp()
   listening={seen={},since=since}
-  GV.queue('L|'..key()..'|'..since)
-  -- Nobody answered: no one with the addon is online, so there's nobody to catch up with.
-  GV.schedule('listen',15,function() listening=nil end)
+  GV.queue('L|'..key()..'|'..since,true)
+  GV.collect('*list',since)
+  -- A reply that stalls partway still ends, so the login summary shows.
+  GV.schedule('listen',120,GV.finishListening)
 end
 function GV.onRequestMessage(action,origin,rest,sender)
   local senderId=(not isSecret(sender) and nameId(sender)) or '?'
   if senderId==myId() or not GV.guild() then return end
   if action=='L' then
-    -- Several guildmates logging in at once: answer the one who has the least.
-    local since=tonumber(rest) or 0
-    GV.listSince=math.min(GV.listSince or since,since)
-    GV.once('reqlist',1+math.random()*4,function() local s=GV.listSince; GV.listSince=nil; GV.sendRequestList(s) end)
+    GV.maybeOffer('*list',tonumber(rest) or 0)
   elseif action=='P' then
-    GV.cancel('reqlist'); GV.listSince=nil
-    if listening and not listening.from then
+    local c=collecting['*list']
+    local mine=c and c.asked and c.asked.from==senderId
+    GV.answered('*list',senderId)
+    if mine and listening and not listening.from then
       listening.from,listening.left=senderId,tonumber(rest) or 0
       if listening.left<=0 then GV.finishListening() end
     end
@@ -785,12 +899,14 @@ local function listKey(set)
 end
 function GV.askManaged()
   local g=GV.guild()
-  if g then GV.queue('S|'..key()..'|'..(g.managedStamp or 0)) end
+  if not g then return end
+  GV.queue('S|'..key()..'|'..(g.managedStamp or 0),true)
+  GV.collect('*gm')
 end
-function GV.sendManaged()
+function GV.sendManaged(asked)
   local g=GV.guild()
   if not g or not g.managedStamp or not g.managedBy then return end
-  if managedSync.sentStamp==g.managedStamp and GetTime()-managedSync.sentAt<30 then return end
+  if not asked and managedSync.sentStamp==g.managedStamp and GetTime()-managedSync.sentAt<30 then return end
   managedSync.sentStamp,managedSync.sentAt=g.managedStamp,GetTime()
   local chunks,chunk,length={},{},0
   for _,name in ipairs(GV.managedNames(g)) do
@@ -799,7 +915,7 @@ function GV.sendManaged()
   end
   chunks[#chunks+1]=table.concat(chunk,',')
   local head='M|'..g.managedBy..'|'..g.managedStamp..'|'
-  for i,text in ipairs(chunks) do GV.queue(head..i..'|'..#chunks..'|'..text) end
+  for i,text in ipairs(chunks) do GV.queue(head..i..'|'..#chunks..'|'..text,asked) end
 end
 -- On the guild master's client: replace the list and send it to everyone.
 function GV.setManaged(set)
@@ -841,7 +957,7 @@ function GV.onListMessage(action,origin,rest,sender)
   if action=='S' then
     local stamp=tonumber(rest)
     if not stamp then return end
-    if stamp<mine then GV.once('list:send',1+math.random()*4,GV.sendManaged)
+    if stamp<mine then GV.maybeOffer('*gm',stamp)
     elseif stamp>mine then if plausible(stamp) then GV.once('list:ask',1+math.random()*3,GV.askManaged) end
     else GV.cancel('list:ask') end
     return
@@ -849,8 +965,9 @@ function GV.onListMessage(action,origin,rest,sender)
   local stamp,part,total,names=rest:match('^(%d+)|(%d+)|(%d+)|(.*)$')
   stamp,part,total=tonumber(stamp),tonumber(part),tonumber(total)
   if not stamp or part<1 or total<1 or total>10 or part>total then return end
-  if stamp>=mine then GV.cancel('list:send') end
+  if stamp>=mine then GV.cancel('list:send'); GV.cancel('offer:*gm') end
   if stamp>mine then GV.cancel('list:ask') end
+  GV.answered('*gm',senderId,stamp)
   local slot=stamp..'|'..(nameId(origin) or '?')..'|'..senderId
   local p=managedSync.parts[slot] or {total=total,names={},got=0}
   managedSync.parts[slot]=p
@@ -2086,7 +2203,7 @@ function GV.refreshSettings()
   ui.syncButton:ClearAllPoints(); ui.syncButton:SetPoint('TOPLEFT',10,y-24)
   ui.statusText:ClearAllPoints(); ui.statusText:SetPoint('TOPLEFT',10,y-54)
   ui.statusText:SetText(string.format('Version %s   ·   playing %s%s\nMessages sent %d, received %d, rejected %d, waiting to send %d',
-    VERSION,key(),(GV.isBank(myId()) and ' (a bank toon)' or '')..(GV.isTrial() and ' (trial account: browse only)' or ''),sent,received,rejected,#queue))
+    VERSION,key(),(GV.isBank(myId()) and ' (a bank toon)' or '')..(GV.isTrial() and ' (trial account: browse only)' or ''),sent,received,rejected,GV.queued()))
   ui.settingsContent:SetHeight(-y+100)
 end
 
@@ -2362,7 +2479,7 @@ end
 function GV.status()
   local g=GV.guild()
   log(string.format('v%s; guild=%s; you=%s%s; sent=%d received=%d rejected=%d queued=%d',VERSION,tostring(guildKey()),key(),
-    GV.isBank(myId()) and ' (bank character)' or '',sent,received,rejected,#queue),true)
+    GV.isBank(myId()) and ' (bank character)' or '',sent,received,rejected,GV.queued()),true)
   if g then
     log(string.format('  %d active requests; officers are ranks 0-%d%s',GV.activeRequestCount(),g.officerRank or 1,
       GV.isApprover(myId()) and ' (you can approve)' or ''),true)
@@ -2524,18 +2641,18 @@ frame:SetScript('OnUpdate',function(_,elapsed)
       if timer then timer.fn() end
     end
   end
-  if #queue>0 and not GV.messagingBlocked() then
-    sinceSend=sinceSend+elapsed
-    if sinceSend>=0.2 then
-      sinceSend=0
-      if GV.rawSend(queue[1]) then
-        table.remove(queue,1); sendFailures=0
-      else
-        -- Throttled messages go through on a later try; one that keeps failing is dropped so it can't stall the queue.
-        sendFailures=sendFailures+1
-        if sendFailures>=5 then table.remove(queue,1); sendFailures=0 end
-        sinceSend=-1
-      end
+  allowance=math.min(10,allowance+elapsed)
+  local lane=(#urgent>0 and urgent) or queue
+  if #lane>0 and allowance>=1 and not GV.messagingBlocked() then
+    local item=lane[1]
+    if GV.rawSend(item[1]) then
+      table.remove(lane,1); allowance=allowance-1; sendFailures=0
+      if item[2] then item[2]() end
+    else
+      -- Throttled anyway (the server sets the real limit): wait for the allowance to refill. A message
+      -- that keeps failing is dropped so it can't stall the queue.
+      allowance=0; sendFailures=sendFailures+1
+      if sendFailures>=5 then table.remove(lane,1); sendFailures=0 end
     end
   end
   sinceUpdate=sinceUpdate+elapsed
