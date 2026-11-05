@@ -7,5 +7,8 @@
   "requests_webhook": "",
   "ping_role": "",
   "approval_ping": "",
+  "donations_webhook": "",
+  "summary_webhook": "",
+  "export": "",
   "interval": 15
 }

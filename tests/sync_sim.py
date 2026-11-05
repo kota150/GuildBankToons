@@ -384,6 +384,98 @@ check('if the chosen guildmate doesn\'t answer in 2 seconds, the next newest is 
 for c in bus.clients: c.mute=None
 bank.login(); bus.run(20)
 
+# --- guild plan: goals, needs and rules ---
+def plan(c): return c.L.globals().GuildBankToonsDB.guilds["Verdant"].plan
+officer.L.execute("""local p=GuildBankToons.copyPlan()
+p.goals.g1={name="Raid fund",target=1000000,toon="*"}
+p.wants[2589]=200; p.wants[9999]=5; p.wants[4306]=50
+p.rules.autoMax=5; p.rules.autoRank=4; p.rules.limit=100
+GuildBankToons.setPlan(p)""")
+bus.run(20)
+check("an officer's goals, needs and rules reach everyone", all(plan(c) and plan(c).goals.g1 and plan(c).wants[2589]==200 and plan(c).rules.autoMax==5 for c in (m1,m2,bank,gm)))
+m1.L.execute('local p=GuildBankToons.copyPlan(); p.wants[2589]=1; GuildBankToons.setPlan(p)'); bus.run(5)
+check('members cannot change the plan', plan(officer).wants[2589]==200 and plan(m1).wants[2589]==200)
+evil.L.eval("""function(stamp) C_ChatInfo.SendAddonMessage('GBTOONS',"K|Mallory|"..stamp.."|1|1|w~2589~1",'GUILD') end""")(int(SERVER0+clock['t'])+5)
+bus.run(3)
+check('a plan from a non-officer is ignored', plan(m2).wants[2589]==200)
+needs={r.id:r for r in GBT(m1).itemRows(None,'needs','','name').values()}
+check('the Needs view lists wanted items, held or not, with what is short', 9999 in needs and needs[9999].short==5 and needs[2589].short>0)
+before=len(requests_of(officer))
+slash(m1,'request 2589 2'); bus.run(12)
+check('small requests from eligible ranks are approved automatically', latest(officer).status=='approved' and latest(officer).count==2)
+slash(m1,'request 2589 90'); bus.run(5)
+check('the daily limit stops a request that would go over it', latest(officer).count==2 and any('limit is 100' in l for l in m1.logs))
+GBT(m1).createRequest(0,1,'repairs','Vault Keeper'); bus.run(8)
+gr=latest(officer)
+check('members can request gold', gr.item==0 and gr.count==1)
+GBT(officer).setRequestStatus(gr,'approved'); bus.run(8)
+bank.env.mailOpen=True; bank.fire('MAIL_SHOW'); bank.env.sendMoney=0
+GBT(bank).fillMail(latest(bank))
+check('the mail helper puts the gold in the mail', bank.env.sendMoney==10000)
+bank.L.globals().SendMail('Alice','Guild bank: 1g',''); bank.fire('MAIL_SEND_SUCCESS'); bus.run(8)
+out=[e for e in GBT(m1).ledger().values() if e.kind=='out' and e.money==10000]
+check('mailed requests show in the ledger as withdrawals', len(out)==1)
+# The first change after logging in goes out whole (the bank toon can't know what others hold); the next is a delta.
+bank.setbags([[2589,20],[2589,20],[2589,5],[2592,2]]); bank.fire('BAG_UPDATE_DELAYED'); bus.run(25)
+mark=len(bus.log)
+bank.setbags([[2589,20],[2589,20],[2589,5],[2592,2]],bank=[[4306,10]]); bank.fire('BANKFRAME_OPENED'); bus.run(1); bank.fire('BANKFRAME_CLOSED'); bus.run(25)
+check('a small change goes out as just the changes', len(since(mark,'U|Vault Keeper|'))==1 and len(since(mark,'B|Vault Keeper|'))==0)
+check('guildmates apply the changes', m1.snap()['hash']==bank.snap()['hash'] and m1.snap()['bank'].get(4306)==10)
+check('officers are told when a wanted item runs low', any('Low stock' in l and '4306' in l for l in officer.logs))
+vk(m2).vaultkeeper.stamp=vk(m2).vaultkeeper.stamp-50
+bank.setbags([[2589,20],[2589,20],[2589,6]]); bank.fire('BAG_UPDATE_DELAYED'); bus.run(40)
+check('a guildmate missing the base copy asks for the whole thing', m2.snap()['hash']==bank.snap()['hash'])
+bank.L.execute('INBOX={{sender="Coin Purse", subject="restock", money=0, items={{2592,4}}}}')
+bank.fire('MAIL_INBOX_UPDATE'); bus.run(5)
+moved=[d for d in donations(officer).values() if d.status=='moved']
+check('mail between bank toons is logged as a move, not a donation', len(moved)==1 and moved[0].by=='Coin Purse')
+series=list(GBT(m1).goldSeries(30,'*').values())
+check('gold history builds up for the chart', series[-1]==GBT(m1).currentGold('*') and series[-1]>0)
+inv=GBT(m1).exportText('inventory','csv'); led=GBT(m1).exportText('ledger','csv'); gold=GBT(m1).exportText('gold','csv')
+check('inventory export has a column per bank toon', inv.startswith('Item ID,Item,Quality,Available,Reserved,Total') and 'Vault Keeper' in inv.split('\n')[0])
+check('ledger export lists donations, moves and withdrawals', all(k in led for k in ('Donation','Move','Withdrawal')))
+check('gold export has the history', gold.startswith('Date,') and len(gold.split('\n'))>1)
+db1=m1.L.globals().GuildBankToonsDB
+for tab in ('goals','donations','gm','items'):
+    GBT(m1).open(tab); bus.run(0.5)
+for sub in ('toons','goals','needs','rules'):
+    db1.ui.guildSub=sub; GBT(m1).refreshGuild()
+db1.ui.filter='needs'; GBT(m1).refreshItems(); db1.ui.filter='all'
+GBT(m1).openExport('ledger'); GBT(m1).refreshExport(); GBT(m1).openGoldRequest()
+check('Goals, Ledger and Guild tabs, the export window and gold requests draw', True)
+
+# --- the Discord companion reads what the game saved ---
+import subprocess, tempfile, os, json as _json
+m1.L.execute(r"""
+local function ser(v,ind)
+  if type(v)=='table' then
+    local keys={}
+    for k in pairs(v) do keys[#keys+1]=k end
+    table.sort(keys,function(a,b) return tostring(a)<tostring(b) end)
+    local out={'{'}
+    for _,k in ipairs(keys) do
+      local key=type(k)=='number' and ('['..k..']') or ('['..string.format('%q',k)..']')
+      out[#out+1]=ind..'  '..key..' = '..ser(v[k],ind..'  ')..','
+    end
+    out[#out+1]=ind..'}'
+    return table.concat(out,'\n')
+  elseif type(v)=='string' then return string.format('%q',v)
+  else return tostring(v) end
+end
+SAVED='GuildBankToonsDB = '..ser(GuildBankToonsDB,'')..'\n'
+""")
+tmp=tempfile.mkdtemp()
+sv=os.path.join(tmp,'GuildBankToons.lua'); open(sv,'w').write(m1.L.globals().SAVED)
+comp=os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])),'..','companion','guildbanktoons_discord.py')
+dry=subprocess.run([sys.executable,comp,'--dry-run','--force','--savedvars',sv],capture_output=True,text=True,cwd=tmp)
+check('companion dry run reads the save and builds the goals message', dry.returncode==0 and 'Gold goals' in dry.stdout and 'Raid fund' in dry.stdout and 'What the guild needs' in dry.stdout)
+check('companion thanks donors', 'donated' in dry.stdout and 'Thank you!' in dry.stdout)
+exp=subprocess.run([sys.executable,comp,'--savedvars',sv,'--export',os.path.join(tmp,'out')],capture_output=True,text=True,cwd=tmp,
+                   env={k:v for k,v in os.environ.items() if k!='GUILDBANKTOONS_WEBHOOK'})
+files=sorted(os.listdir(os.path.join(tmp,'out'))) if os.path.isdir(os.path.join(tmp,'out')) else []
+check('companion writes inventory, ledger and gold CSV files', exp.returncode==0 and files==['gold.csv','inventory.csv','ledger.csv'])
+if dry.returncode or exp.returncode: print(dry.stderr[-800:], exp.stderr[-800:])
+
 # --- trial accounts (Forever blocks their addon messages) ---
 before=bus.count; known=len(requests_of(officer))
 m2.L.execute('IsTrialAccount=function() return true end')

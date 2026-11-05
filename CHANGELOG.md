@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- Gold goals with a Goals tab: a bar chart of the guild bank's gold over 30 or 90 days with goal lines, progress bars, and the week's change. Goals also show on Discord.
+- Needs: officers set target amounts for items. The Bank tab's Needs view, the Donate panel's Add needed items button, and low-stock alerts for officers use them.
+- Request rules set by officers: a daily item limit per member, automatic approval of small requests for chosen ranks, and gold requests (with the mail helper filling in the gold).
+- Ledger tab (was Donations): donations, moves between bank toons, and mailed-out requests as withdrawals.
+- Export window for the inventory, ledger and gold history as CSV or text, ready to copy.
+- Bank toons send only what changed when a change is small; guildmates missing the base copy ask for the whole thing.
+- Discord companion: a self-updating goals message (gold, trend, goals, needs, top donors), a thank-you post per received donation, and `--export` to write CSV files.
 - Catching up asks one guildmate: those with newer copies send a one-line offer, and after 5 seconds the client asks only the one with the newest copy, falling back to the next newest if they don't start within 2 seconds. Sending is paced to the game's addon-message limit, with short messages ahead of long transfers.
 - Donations by mail: a Donate panel beside the mail window fills in a donation to a bank toon, and a public Donations tab logs every donation. The bank toon confirms each one when it opens its mailbox, and also logs mail from guildmates without the addon.
 - Bank tab laid out like a bag: item slots with icons, quality borders and counts, gold along the bottom, and a List view for each toon's share.

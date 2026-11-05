@@ -6,7 +6,7 @@ Built for **WoW Forever**. It also loads on Classic Era and retail, but Forever 
 
 ## Setting up
 
-1. **Pick the bank character(s).** The guild can have as many as it likes. The easiest way: the **guild master** opens the window (minimap button or `/gbt`), goes to the **Guild Master** tab, types the bank toon's name and presses **Add bank toon**. The list goes to every guildmate running the addon and is passed along like the bank contents, so people who log in while the guild master is offline still get it. Everyone can see the tab; only the guild master (rank 0) can change it, up to 20 bank toons. (`/gbt bank add|remove|clear|list Name` does the same from chat.)
+1. **Pick the bank character(s).** The guild can have as many as it likes. The easiest way: the **guild master** opens the window (minimap button or `/gbt`), goes to the **Guild** tab, types the bank toon's name and presses **Add bank toon**. The list goes to every guildmate running the addon and is passed along like the bank contents, so people who log in while the guild master is offline still get it. Everyone can see the tab; only the guild master (rank 0) can change it, up to 20 bank toons. (`/gbt bank add|remove|clear|list Name` does the same from chat.)
 
    Alternatively, an officer can add a tag per bank character to the guild info text (Guild → Guild Information), for example `[GBT:Vault Keeper]`; `/gbt tag` prints it for you. Use the bank character's full name, first name and surname. Case and spaces don't matter, and no realm is needed. Both ways can be used together. Any member can also follow a bank toon just for themselves under **Settings**.
 2. **Log in on the bank character with the addon enabled.** Its bags are read straight away. The bank can only be read while it's open, so **visit the banker once**. After that the bank contents carry over until the next visit.
@@ -28,10 +28,31 @@ Built for **WoW Forever**. It also loads on Classic Era and retail, but Forever 
 Mail is the main way items reach the bank toons, and every donation goes in a public log.
 
 1. **Donate at any mailbox.** A **Donate to the guild bank** panel opens beside the mail window. Pick a bank toon, add gold and a note if you like, and press **Fill in the mail**: it switches to Send Mail and fills in the recipient, subject and note. Right-click items in your bags to attach them (the panel lists what's attached), then press **Send donation**.
-2. **It's logged.** As soon as the mail goes out, the donation shows in everyone's **Donations** tab as *On its way*.
+2. **It's logged.** As soon as the mail goes out, the donation shows in everyone's **Ledger** tab as *On its way*.
 3. **The bank toon confirms it.** When the bank toon opens its mailbox, the addon checks the mail and marks the donation **Received**, with what actually arrived. The donor gets a thank-you.
 
-Mail a bank toon gets from a guildmate **without the addon** is logged too, when the bank toon opens it. Mail between bank toons, returned mail and COD mail isn't counted. Only the bank toon a donation went to can mark it received. The **Donations** tab has search (donor, bank toon or item), *All / This week / Mine*, and a weekly summary. The log keeps 60 days and syncs to guildmates when they log in. Bank toons don't see the Donate panel; they get the mail helper instead.
+4. **Not sure what to give?** The panel lists what the guild needs most, and **Add needed items** attaches anything in your bags that's on the guild's wanted list, up to the amount still needed.
+
+Mail a bank toon gets from a guildmate **without the addon** is logged too, when the bank toon opens it. Mail from another bank toon is logged as a **move**, not a donation; returned mail and COD mail aren't counted. Only the bank toon a donation went to can mark it received. Bank toons don't see the Donate panel; they get the mail helper instead.
+
+## The ledger
+
+The **Ledger** tab is the guild bank's public record: donations in, moves between bank toons, and requests mailed out (withdrawals), newest first. Search by name, bank toon or item, filter *All / In / Out / Mine*, and see this week's totals at the top. Entries are kept for 60 days and sync to guildmates when they log in.
+
+## Goals, needs and rules
+
+Officers and the guild master set these on the **Guild** tab; everyone can see them, and they reach the whole guild the same way the bank list does.
+
+- **Gold goals** ("Raid consumables: 500g"), for all bank toons together or one toon. The **Goals** tab shows the guild bank's gold as a bar chart over the last 30 or 90 days, with each goal drawn across it as a line, plus a progress bar per goal and the change over the last week. Gold history builds up on every guildmate's client as bank toons report in.
+- **Needs**: items with a target amount. Shift-click an item into the box (or Alt-click it on the Bank tab). The Bank tab's **Needs** view lists them, most needed first; the Donate panel offers them; officers get a chat alert when one drops below its target.
+- **Rules** for requests:
+  - a **daily limit** of items per member;
+  - **automatic approval** for requests up to a set size from chosen ranks (an approver's client online approves them, the bank toon first);
+  - whether members can **request gold**. Gold requests are made from the Bank tab's **Request gold** button, approved like any request, and the mail helper puts the gold in the mail.
+
+## Export
+
+**Export** on the Bank and Ledger tabs (or `/gbt export`) opens a window with the inventory (a column per bank toon, plus what the guild wants), the ledger, or the gold history, as CSV or plain text, already selected: press Ctrl+C and paste it into a spreadsheet, Discord or a file. (Addons can't save files or use the clipboard themselves.) The Discord companion can also write the same three as CSV files; see below.
 
 ## Requests
 
@@ -49,15 +70,16 @@ Requests sync like the bank contents: everyone keeps a copy, and a guildmate log
 
 ## Features
 
-- **One window, five tabs** along the bottom, like the game's character window: **Bank**, **Requests**, **Donations**, **Settings** and **Guild Master**. Open it from the minimap button, the AddOns menu, Options → AddOns, or `/gbt`. Drag the corner to resize it, set its size in Settings, and it remembers where you left it.
-- **Bank tab**: every bank toon down the side with its gold and how fresh its copy is. Beside them, the items laid out as **bag slots** with icons, quality borders and counts, and gold along the bottom like a bag. With **All bank toons** picked, counts are totals across toons; hover a slot to see each toon's share ("Vault Keeper 40, Coin Purse 5"). Switch to **List** to see the shares on every row. Search, All / Bags / Bank, and sort by name, count or quality.
+- **One window, six tabs** along the bottom, like the game's character window: **Bank**, **Requests**, **Ledger**, **Goals**, **Settings** and **Guild**. Open it from the minimap button, the AddOns menu, Options → AddOns, or `/gbt`. Drag the corner to resize it, set its size in Settings, and it remembers where you left it.
+- **Bank tab**: every bank toon down the side with its gold and how fresh its copy is. Beside them, the items laid out as **bag slots** with icons, quality borders and counts, and gold along the bottom like a bag. With **All bank toons** picked, counts are totals across toons; hover a slot to see each toon's share ("Vault Keeper 40, Coin Purse 5"). Switch to **List** to see the shares on every row. Search, All / Bags / Bank / Needs, sort by name, count or quality, **Export**, and **Request gold**.
 - **Click** an item to request it, **Shift-click** to link it in chat. Hover for the game's tooltip plus each toon's bags, bank and reserved counts.
 - **Available counts**: what's left after approved requests, with the reserved amount alongside.
 - **Requests tab**: search by item, name or note; Active / Mine / All; Approve / Deny / Mailed / Cancel buttons for whoever can use them.
-- **Donations tab**: the guild's public donation log (see Donations above).
+- **Ledger tab**: donations, moves and withdrawals (see The ledger above).
+- **Goals tab**: the gold chart, goal progress and what the guild needs.
 - **Donate panel** beside the mail window, for everyone who isn't a bank toon.
 - **Settings tab**: every option as a checkbox, window size, toons you follow just for yourself, Sync now, and sync counters.
-- **Guild Master tab**: the guild's bank toons, with Add, Remove and Remove all for the guild master.
+- **Guild tab**: the guild's bank toons (guild master), and gold goals, needs and request rules (officers).
 - **Mail helper** at mailboxes on bank characters.
 - **Item tooltips** show "Guild bank (Bankalt): 40" anywhere you hover that item.
 
@@ -68,7 +90,8 @@ Everything below is also in the window; the commands are there if you prefer cha
 | Command | What it does |
 | --- | --- |
 | `/gbt` | Open or close the window |
-| `/gbt settings`, `/gbt donations`, `/gbt gm` | Open the Settings, Donations or Guild Master tab |
+| `/gbt settings`, `/gbt ledger`, `/gbt goals`, `/gbt gm` | Open the Settings, Ledger, Goals or Guild tab |
+| `/gbt export` | Open the export window |
 | `/gbt sync` | Ask the guild for the latest contents |
 | `/gbt status` | List bank characters, how old each copy is, and message counters |
 | `/gbt bank add First Last` / `bank remove First Last` / `bank clear` | Set the guild's bank characters for everyone (guild master only) |
@@ -102,6 +125,15 @@ Any guildmate who runs the addon has a copy, so the script doesn't have to run o
    ```bash
    python3 companion/guildbanktoons_discord.py --watch
    ```
+
+**Goals on Discord.** One message per guild stays up to date with the bank's gold (with a two-week trend line), each gold goal as a progress bar, what the guild needs, and this week's top donors. Set `summary_webhook` to post it in a different channel, or `no_summary` to turn it off.
+
+**Donations on Discord.** When a bank toon receives a donation, the companion posts a thank-you ("🎁 Alice donated 20× Linen Cloth to Vault Keeper. Thank you!"). Set `donations_webhook` for a different channel, or `no_donations` to turn it off. The first run only takes note of donations already in the log, so it doesn't flood the channel.
+
+**CSV files.** `--export FOLDER` (or `"export"` in the config) writes `inventory.csv`, `ledger.csv` and `gold.csv` after every update. Without a webhook it just writes the files:
+```bash
+python3 companion/guildbanktoons_discord.py --export exports
+```
 
 **Requests on Discord.** Each new request gets its own message, which can ping an officer role (`ping_role`). When it's approved, that message shows who approved it, and a second message goes out saying the bank character should mail it. Set `approval_ping` to ping someone there, as `<@USER_ID>` for a person or `<@&ROLE_ID>` for a role. Once it's mailed, denied or cancelled, the first message is struck through ("📬 Mailed by Vault Keeper (approved by Olivia Stone)"). The bank character's message lists reserved amounts next to its items. To get an ID, enable Developer Mode in Discord, then right-click the user or role → Copy ID. Set `requests_webhook` to post requests in a different channel. Requests that finished before your PC saw them aren't posted.
 
@@ -143,3 +175,5 @@ pip install lupa
 ```bash
 python3 tests/sync_sim.py GuildBankToons.lua
 ```
+
+The simulation can't draw real frames or talk to a real server, so [docs/TESTING.md](docs/TESTING.md) is a checklist for trying it on Forever.

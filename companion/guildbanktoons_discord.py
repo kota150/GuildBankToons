@@ -7,17 +7,23 @@ message per guild bank character up to date through a webhook. New item requests
 separate message that can ping whoever mails for the bank. Any guildmate running the addon has a
 copy of the bank, so anyone can run this, not just whoever plays the bank character.
 
+It also thanks each donor once the bank toon receives their donation, keeps a Goals message up to date
+(gold with a two-week trend, each gold goal, the items the guild needs, and this week's top donors), and
+can write the bank, the ledger and the gold history to CSV files.
+
 Python 3.8+, standard library only.
 
     python3 guildbanktoons_discord.py --dry-run            # print what would be posted
     python3 guildbanktoons_discord.py                      # post or update once
     python3 guildbanktoons_discord.py --watch              # keep running, update after every logout/reload
+    python3 guildbanktoons_discord.py --export exports     # write inventory.csv, ledger.csv and gold.csv
 
 Settings come from guildbanktoons.json next to this script (see guildbanktoons.example.json), overridden by
 command-line flags. The webhook URL can also come from the GUILDBANKTOONS_WEBHOOK environment variable.
 """
 
 import argparse
+import csv
 import datetime
 import glob
 import json
@@ -289,12 +295,23 @@ def mentions(text):
     return {"parse": [], "users": users, "roles": roles}
 
 
-def request_line(req, names, link_base):
-    item_id = req.get("item")
+def item_name(names, item_id):
     info = names.get(item_id) or names.get(str(item_id)) or {}
-    name = info.get("n") or f"Item #{item_id}"
+    return info.get("n") or f"Item #{item_id}"
+
+
+def request_what(req, names, link_base):
+    """'**20×** [Linen Cloth]' for items; requests for gold use item 0 with the count in whole gold."""
+    item_id = req.get("item")
+    if not item_id:
+        return f"**{req.get('count')}g**"
+    name = item_name(names, item_id)
     item = f"[{name}]({link_base}{item_id})" if link_base else f"**{name}**"
-    line = f"📦 **{short(req.get('by'))}** requests **{req.get('count')}×** {item} from **{short(req.get('bank'))}**"
+    return f"**{req.get('count')}×** {item}"
+
+
+def request_line(req, names, link_base):
+    line = f"📦 **{short(req.get('by'))}** requests {request_what(req, names, link_base)} from **{short(req.get('bank'))}**"
     if req.get("note"):
         line += f' ("{req["note"]}")'
     return line
@@ -320,11 +337,9 @@ def build_request_message(req, names, link_base, ping_role):
 
 def build_approval_ping(req, names, link_base, approval_ping):
     """A separate message when a request is approved: edits don't notify anyone, new messages do."""
-    item_id = req.get("item")
-    info = names.get(item_id) or names.get(str(item_id)) or {}
-    name = info.get("n") or f"Item #{item_id}"
+    what = f"{req.get('count')}g" if not req.get("item") else f"{req.get('count')}× {item_name(names, req.get('item'))}"
     text = (f"{approval_ping + ' ' if approval_ping else ''}✅ Approved by {short(req.get('actor'))}: "
-            f"**{short(req.get('bank'))}**, please mail **{req.get('count')}× {name}** to **{short(req.get('by'))}**.")
+            f"**{short(req.get('bank'))}**, please mail **{what}** to **{short(req.get('by'))}**.")
     return {"username": "Guild Bank", "content": text, "allowed_mentions": mentions(approval_ping)}
 
 
@@ -332,10 +347,214 @@ def reserved_by_bank(guild):
     """bank id -> {item id: count} approved but not yet mailed."""
     out = {}
     for req in (guild.get("requests") or {}).values():
-        if req.get("status") == "approved":
+        if req.get("status") == "approved" and req.get("item"):
             items = out.setdefault(name_id(req.get("bank")), {})
             items[req.get("item")] = items.get(req.get("item"), 0) + int(req.get("count") or 0)
     return out
+
+
+def donation_items(entry, names, limit=None):
+    """'20× Linen Cloth, 3× Silk Cloth, 2g 0s 0c', biggest stacks first."""
+    items = sorted((entry.get("items") or {}).items(), key=lambda kv: (-int(kv[1]), int(kv[0])))
+    parts = [f"{count}× {item_name(names, item_id)}" for item_id, count in items]
+    if limit and len(parts) > limit:
+        parts = parts[:limit] + [f"{len(parts) - limit} more"]
+    if int(entry.get("money") or 0) > 0:
+        parts.append(money(entry["money"]))
+    return ", ".join(parts) or "nothing"
+
+
+def build_donation_message(donation, names):
+    text = (f"🎁 **{short(donation.get('by'))}** donated {donation_items(donation, names, 6)} to "
+            f"**{short(donation.get('bank'))}**. Thank you!")
+    if donation.get("note"):
+        text += f' ("{donation["note"]}")'
+    return {"username": "Guild Bank", "content": text, "allowed_mentions": {"parse": []}}
+
+
+def gold_at(history, stamp):
+    """The last gold seen at or before stamp in one bank toon's {1: {1: stamp, 2: copper}, ...} history."""
+    best = None
+    for entry in sorted((history or {}).values(), key=lambda e: e.get(1, 0)):
+        if entry.get(1, 0) <= stamp:
+            best = entry.get(2)
+    return best
+
+
+def gold_series(guild, days, now=None):
+    """End-of-day total gold across the designated bank toons for the last `days` days (None if unknown)."""
+    now = now or time.time()
+    end = datetime.datetime.fromtimestamp(now).replace(hour=23, minute=59, second=59).timestamp()
+    histories = [(guild.get("gold") or {}).get(bank_id) for bank_id in designated(guild)]
+    out = []
+    for d in range(days - 1, -1, -1):
+        at = min(now, end - d * 86400)
+        values = [v for v in (gold_at(h, at) for h in histories) if v is not None]
+        out.append(sum(values) if values else None)
+    return out
+
+
+def sparkline(values):
+    known = [v for v in values if v is not None]
+    if not known:
+        return ""
+    low, high = min(known), max(known)
+    bars = "▁▂▃▄▅▆▇█"
+    return "".join(" " if v is None else bars[0 if high == low else int((v - low) / (high - low) * 7)] for v in values)
+
+
+def progress_bar(fraction, width=12):
+    filled = max(0, min(width, round(fraction * width)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def current_gold(guild, toon="*"):
+    banks = guild.get("banks") or {}
+    return sum(int((banks.get(b) or {}).get("gold") or 0) for b in designated(guild) if toon in ("*", b))
+
+
+def stock(guild):
+    """item id -> count available across the designated bank toons, after approved requests."""
+    reserved, banks, out = reserved_by_bank(guild), guild.get("banks") or {}, {}
+    for bank_id in designated(guild):
+        snap = banks.get(bank_id) or {}
+        held = {}
+        for field in ("bags", "bank"):
+            for item_id, count in (snap.get(field) or {}).items():
+                held[item_id] = held.get(item_id, 0) + int(count)
+        for item_id, count in held.items():
+            out[item_id] = out.get(item_id, 0) + max(0, count - reserved.get(bank_id, {}).get(item_id, 0))
+    return out
+
+
+def top_donors(guild, days=7, now=None):
+    now = now or time.time()
+    totals = {}
+    for d in (guild.get("donations") or {}).values():
+        if d.get("status") in ("received", "sent") and now - int(d.get("created") or 0) <= days * 86400:
+            t = totals.setdefault(short(d.get("by")), [0, 0, 0])
+            t[0] += 1
+            t[1] += sum(int(c) for c in (d.get("items") or {}).values())
+            t[2] += int(d.get("money") or 0)
+    return sorted(totals.items(), key=lambda kv: (-kv[1][1], -kv[1][2], kv[0]))
+
+
+def build_summary_message(guild_name, guild, names):
+    """The Goals message: gold and its trend, gold goals, what the guild needs, and this week's donors."""
+    plan = guild.get("plan") or {}
+    series = gold_series(guild, 14)
+    gold = current_gold(guild)
+    week_ago = series[-8] if len(series) >= 8 else None
+    lines = [f"**Gold:** {money(gold)}"]
+    if week_ago is not None:
+        change = gold - week_ago
+        lines.append(f"**Last 7 days:** {'+' if change >= 0 else '-'}{money(abs(change))}")
+    spark = sparkline(series)
+    if spark.strip():
+        lines.append(f"`{spark}` last 14 days")
+    embeds = [{"title": f"🏦 {guild_name}: guild bank goals", "description": "\n".join(lines), "color": 0xD8AA55}]
+    goals = sorted((plan.get("goals") or {}).values(), key=lambda g: int(g.get("target") or 0))
+    if goals:
+        rows = []
+        banks = guild.get("banks") or {}
+        for goal in goals:
+            target = int(goal.get("target") or 0)
+            toon = goal.get("toon") or "*"
+            have = current_gold(guild, toon)
+            who = "" if toon == "*" else f" ({short((banks.get(toon) or {}).get('owner') or toon)})"
+            frac = have / target if target else 1
+            rows.append(f"**{goal.get('name') or 'Goal'}**{who}\n{progress_bar(frac)} {money(have).split(' ')[0]} / "
+                        f"{money(target).split(' ')[0]} ({round(frac * 100)}%)")
+        embeds.append({"title": "Gold goals", "description": fit(rows, DESCRIPTION_LIMIT // 2), "color": 0x40A040})
+    wants = plan.get("wants") or {}
+    if wants:
+        have = stock(guild)
+        rows = []
+        for item_id, target in wants.items():
+            n = have.get(item_id, have.get(str(item_id), 0))
+            rows.append((n / int(target) if int(target) else 1, f"{progress_bar(n / int(target) if int(target) else 1, 8)} "
+                         f"**{item_name(names, item_id)}** {n} / {target}" + (f" (need {int(target) - n})" if n < int(target) else " ✅")))
+        rows.sort(key=lambda r: r[0])
+        embeds.append({"title": "What the guild needs", "description": fit([r[1] for r in rows], 1500), "color": 0xFF8040})
+    donors = top_donors(guild)
+    if donors:
+        rows = [f"**{name}**: {n} donation{'s' if n != 1 else ''}, {items} items" + (f", {money(copper)}" if copper else "")
+                for name, (n, items, copper) in donors[:10]]
+        embeds.append({"title": "Top donors this week", "description": "\n".join(rows), "color": 0x8A6AD8})
+    return {"username": "Guild Bank", "embeds": embeds, "allowed_mentions": {"parse": []}}
+
+
+# --- CSV export -----------------------------------------------------------------------------------
+
+def day(stamp):
+    return datetime.datetime.fromtimestamp(int(stamp or 0)).strftime("%Y-%m-%d")
+
+
+def export_csv(data, folder, guild_filter=None):
+    """Writes inventory.csv, ledger.csv and gold.csv (one set per guild, the guild's name in front when there are several)."""
+    os.makedirs(folder, exist_ok=True)
+    names = data.get("items") or {}
+    guilds = [(n, g) for n, g in (data.get("guilds") or {}).items() if not guild_filter or guild_filter.lower() in n.lower()]
+    written = []
+    for guild_name, guild in guilds:
+        prefix = "" if len(guilds) == 1 else re.sub(r"[^A-Za-z0-9]+", "_", guild_name) + "_"
+        banks, bank_ids = guild.get("banks") or {}, list(designated(guild))
+        toon_names = [short((banks.get(b) or {}).get("owner") or designated(guild)[b]) for b in bank_ids]
+        reserved, wants = reserved_by_bank(guild), (guild.get("plan") or {}).get("wants") or {}
+        rows = {}
+        for col, bank_id in enumerate(bank_ids):
+            snap = banks.get(bank_id) or {}
+            for field in ("bags", "bank"):
+                for item_id, count in (snap.get(field) or {}).items():
+                    row = rows.setdefault(item_id, {"held": [0] * len(bank_ids), "reserved": 0})
+                    row["held"][col] += int(count)
+            for item_id, count in reserved.get(bank_id, {}).items():
+                if item_id in rows:
+                    rows[item_id]["reserved"] += count
+        path = os.path.join(folder, prefix + "inventory.csv")
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["Item ID", "Item", "Quality", "Available", "Reserved", "Total", *toon_names, "Guild wants"])
+            for item_id, row in sorted(rows.items(), key=lambda kv: item_name(names, kv[0]).lower()):
+                total = sum(row["held"])
+                info = names.get(item_id) or names.get(str(item_id)) or {}
+                w.writerow([item_id, item_name(names, item_id), info.get("q", ""), max(0, total - row["reserved"]),
+                            row["reserved"], total, *row["held"], wants.get(item_id, wants.get(str(item_id), ""))])
+        written.append(path)
+        ledger = []
+        for d in (guild.get("donations") or {}).values():
+            kind = "Move" if d.get("status") == "moved" else "Donation"
+            ledger.append((int(d.get("created") or 0), kind, short(d.get("by")), short(d.get("bank")),
+                           donation_items({"items": d.get("items")}, names) if d.get("items") else "",
+                           money(d["money"]) if int(d.get("money") or 0) else "", d.get("status"), d.get("note") or ""))
+        for r in (guild.get("requests") or {}).values():
+            if r.get("status") == "mailed":
+                what = "" if not r.get("item") else f"{r.get('count')}× {item_name(names, r.get('item'))}"
+                gold = f"{r.get('count')}g" if not r.get("item") else ""
+                ledger.append((int(r.get("updated") or 0), "Withdrawal", short(r.get("bank")), short(r.get("by")),
+                               what, gold, "mailed", r.get("note") or ""))
+        path = os.path.join(folder, prefix + "ledger.csv")
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["Date", "Type", "From", "To", "Items", "Gold", "Status", "Note"])
+            for row in sorted(ledger, reverse=True):
+                w.writerow([day(row[0]), *row[1:]])
+        written.append(path)
+        path = os.path.join(folder, prefix + "gold.csv")
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["Date", *toon_names, "Total"])
+            histories = [(guild.get("gold") or {}).get(b) for b in bank_ids]
+            now = time.time()
+            end = datetime.datetime.fromtimestamp(now).replace(hour=23, minute=59, second=59).timestamp()
+            for d in range(89, -1, -1):
+                at = min(now, end - d * 86400)
+                values = [gold_at(h, at) for h in histories]
+                if any(v is not None for v in values):
+                    w.writerow([day(at), *["" if v is None else int(v) // 10000 for v in values],
+                                sum(int(v) for v in values if v is not None) // 10000])
+        written.append(path)
+    return written
 
 
 # --- Discord webhook -------------------------------------------------------------------------------
@@ -401,6 +620,40 @@ def run_once(args, state):
             changed += 1
             print(f"Updated Discord for {snap.get('owner')} ({guild_name}).")
             time.sleep(1)  # stay well inside the webhook rate limit
+        if not args.no_summary:
+            slot = f"summary|{guild_name}"
+            seen = state.setdefault(slot, {})
+            payload = build_summary_message(guild_name, guild, names)
+            fingerprint = json.dumps(payload, sort_keys=True)
+            if args.force or seen.get("fingerprint") != fingerprint:
+                if args.dry_run:
+                    print(json.dumps(payload, indent=2, ensure_ascii=False))
+                else:
+                    seen["message"] = publish(args.summary_webhook or args.webhook, seen.get("message"), payload)
+                    seen["fingerprint"] = fingerprint
+                    changed += 1
+                    print(f"Updated the goals message for {guild_name}.")
+                    time.sleep(1)
+        if not args.no_donations:
+            thanked = state.get("donations")
+            first_run = thanked is None
+            thanked = state.setdefault("donations", {})
+            donations = sorted((guild.get("donations") or {}).items(), key=lambda kv: kv[1].get("created") or 0)
+            for donation_id, donation in donations:
+                # Thank donors once the bank toon has the donation; the first run only takes note of old ones.
+                if donation.get("status") != "received" or donation_id in thanked:
+                    continue
+                if first_run and not args.force:
+                    thanked[donation_id] = None
+                    continue
+                payload = build_donation_message(donation, names)
+                if args.dry_run:
+                    print(json.dumps(payload, indent=2, ensure_ascii=False))
+                    continue
+                thanked[donation_id] = publish(args.donations_webhook or args.webhook, None, payload)
+                changed += 1
+                print(f"Thanked {donation.get('by')} for a donation to {donation.get('bank')}.")
+                time.sleep(1)
         if args.no_requests:
             continue
         posted = state.setdefault("requests", {})
@@ -423,9 +676,12 @@ def run_once(args, state):
                 publish(webhook, None, payloads[1])
             posted[request_id] = {"message": message, "status": status, "updated": req.get("updated")}
             changed += 1
-            print(f"Posted request {req.get('count')}x item {req.get('item')} by {req.get('by')} ({status}).")
+            print(f"Posted request {req.get('count')}{'g' if not req.get('item') else 'x item ' + str(req.get('item'))} by {req.get('by')} ({status}).")
             time.sleep(1)
-    if not args.dry_run:
+    if args.export:
+        for written in export_csv(data, args.export, args.guild):
+            print(f"Wrote {written}")
+    if not args.dry_run and not args.export_only:
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
     return path, changed
@@ -448,11 +704,26 @@ def main():
                    help='mention for approvals, e.g. "<@123>" (a user) or "<@&456>" (a role)')
     p.add_argument("--no-requests", action="store_true", default=config.get("no_requests", False),
                    help="don't post requests")
+    p.add_argument("--donations-webhook", default=config.get("donations_webhook"),
+                   help="separate webhook (channel) for donation thank-yous; defaults to --webhook")
+    p.add_argument("--no-donations", action="store_true", default=config.get("no_donations", False),
+                   help="don't post donation thank-yous")
+    p.add_argument("--summary-webhook", default=config.get("summary_webhook"),
+                   help="separate webhook (channel) for the goals message; defaults to --webhook")
+    p.add_argument("--no-summary", action="store_true", default=config.get("no_summary", False),
+                   help="don't post the goals message")
+    p.add_argument("--export", metavar="FOLDER", default=config.get("export"),
+                   help="also write inventory.csv, ledger.csv and gold.csv to this folder after every update")
     p.add_argument("--watch", action="store_true", help="keep running and update after every save")
     p.add_argument("--interval", type=int, default=config.get("interval", 15), help="seconds between checks")
     p.add_argument("--dry-run", action="store_true", help="print the messages instead of posting")
     p.add_argument("--force", action="store_true", help="post even if nothing changed")
     args = p.parse_args()
+    # Only exporting: no webhook needed and nothing posted.
+    args.export_only = bool(args.export) and not args.webhook and not args.dry_run
+    if args.export_only:
+        args.dry_run = True
+        args.no_summary = args.no_donations = args.no_requests = True
     if not args.webhook and not args.dry_run:
         sys.exit("No webhook URL. Set it in guildbanktoons.json, GUILDBANKTOONS_WEBHOOK, or --webhook.")
 

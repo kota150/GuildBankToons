@@ -28,6 +28,9 @@ local db
 -- Outgoing messages: urgent (small control messages, answers someone is waiting for) go before bulk.
 local queue, urgent, timers, pending = {}, {}, {}, {}
 local lastSent, lastSentAt = {}, {}
+-- A bank toon's last broadcast of its own contents, which its next change is sent against.
+local lastBroadcast = {}
+local function copyTable(t) local c={} for k,v in pairs(t or {}) do c[k]=v end return c end
 local sent, received, rejected = 0, 0, 0
 local bankOpen, syncReady = false, false
 local updatePending, sinceUpdate = false, 0
@@ -125,12 +128,18 @@ function GV.initDB()
   db.ui.sort=db.ui.sort or 'name'
   db.ui.donFilter=db.ui.donFilter or 'all'
   db.ui.view=db.ui.view or 'grid'
+  if db.ui.donFilter=='week' then db.ui.donFilter='all' end
+  db.ui.chartDays=db.ui.chartDays or 30
+  db.ui.guildSub=db.ui.guildSub or 'toons'
+  db.ui.exportKind=db.ui.exportKind or 'inventory'
+  db.ui.exportFormat=db.ui.exportFormat or 'csv'
   db.settings=db.settings or {}
   if db.settings.tooltips==nil then db.settings.tooltips=true end
   if db.settings.quiet==nil then db.settings.quiet=false end
   if db.settings.minimap==nil then db.settings.minimap=true end
   -- The Donate panel beside the mail window, for everyone who isn't a bank toon.
   if db.settings.donate==nil then db.settings.donate=true end
+  if db.settings.lowStock==nil then db.settings.lowStock=true end
   -- Whisper online officers who don't run the addon when you make a request.
   if db.settings.whispers==nil then db.settings.whispers=true end
   -- Offer a /reload after request changes so the Discord companion on this PC posts them.
@@ -279,8 +288,9 @@ function GV.scanSelf()
   snap.received=snap.stamp
   g.banks[me]=snap
   GV.prime(snap); requestUpdate()
+  GV.recordGold(me,snap.stamp,snap.gold)
   -- Wait for sorting or a mail run to settle, then push the new contents to everyone online.
-  GV.schedule('push',10,function() GV.sendSnapshot(me) end)
+  GV.schedule('push',10,function() GV.pushSnapshot(me) end)
 end
 -- Item names and qualities, remembered so offline views and the Discord export can show them.
 function GV.itemInfo(id)
@@ -365,8 +375,12 @@ function GV.sendSnapshot(id,asked)
   lastSent[id],lastSentAt[id]=snap.stamp,GetTime()
   local origin,stamp=snap.owner,snap.stamp
   local entries=GV.entries(snap)
+  if id==myId() then lastBroadcast[id]={stamp=stamp,bags=copyTable(snap.bags),bank=copyTable(snap.bank)} end
   GV.queue(table.concat({'B',origin,stamp,snap.hash,snap.gold or 0,snap.bankStamp or 0,#entries},'|'),asked)
-  local head='I|'..origin..'|'..stamp..'|'
+  GV.queueEntries('I|'..origin..'|'..stamp..'|',entries,asked)
+  GV.queue('E|'..origin..'|'..stamp,asked)
+end
+function GV.queueEntries(head,entries,asked)
   local chunk,length={},#head
   for _,entry in ipairs(entries) do
     if length+#entry+1>250 then
@@ -376,7 +390,29 @@ function GV.sendSnapshot(id,asked)
     chunk[#chunk+1]=entry; length=length+#entry+1
   end
   if #chunk>0 then GV.queue(head..table.concat(chunk,','),asked) end
-  GV.queue('E|'..origin..'|'..stamp,asked)
+end
+-- A bank toon's own change: when it's small, send only what changed since its last broadcast.
+--   U|origin|stamp|baseStamp|hash|gold|bankStamp|count, then I (count 0 = gone), then E
+-- Guildmates holding the base copy apply it; anyone else asks for the whole copy.
+function GV.pushSnapshot(id)
+  local g=GV.guild()
+  local snap,base=g and g.banks[id],lastBroadcast[id]
+  if not snap then return end
+  if not base or base.stamp>=snap.stamp then GV.sendSnapshot(id); return end
+  local changes={}
+  local function diff(kind,old,new)
+    for item,count in pairs(new or {}) do if old[item]~=count then changes[#changes+1]=kind..':'..item..':'..count end end
+    for item in pairs(old) do if not (new or {})[item] then changes[#changes+1]=kind..':'..item..':0' end end
+  end
+  diff('b',base.bags,snap.bags); diff('k',base.bank,snap.bank)
+  if #changes*2>#GV.entries(snap) then GV.sendSnapshot(id); return end
+  table.sort(changes)
+  lastSent[id],lastSentAt[id]=snap.stamp,GetTime()
+  lastBroadcast[id]={stamp=snap.stamp,bags=copyTable(snap.bags),bank=copyTable(snap.bank)}
+  local origin,stamp=snap.owner,snap.stamp
+  GV.queue(table.concat({'U',origin,stamp,base.stamp,snap.hash,snap.gold or 0,snap.bankStamp or 0,#changes},'|'))
+  GV.queueEntries('I|'..origin..'|'..stamp..'|',changes)
+  GV.queue('E|'..origin..'|'..stamp)
 end
 -- Ask for every bank character; a bank character announces its own copy the same way.
 function GV.syncAll()
@@ -412,6 +448,7 @@ function GV.held(id)
   if not g then return 0,0 end
   if id=='*list' then return GV.newestStamp(),0 end
   if id=='*gm' then return g.managedStamp or 0,0 end
+  if id=='*plan' then return GV.plan().stamp or 0,0 end
   local snap=g.banks[id]
   return snap and snap.stamp or 0,snap and snap.hash or 0
 end
@@ -491,6 +528,7 @@ function GV.onOfferMessage(action,topic,rest,sender)
       GV.listSince=math.min(GV.listSince or stamp,stamp)
       GV.once('reqlist',0.1,function() local since=GV.listSince; GV.listSince=nil; GV.sendRequestList(since) end)
     elseif id=='*gm' then GV.once('list:send',0.1,function() GV.sendManaged(true) end)
+    elseif id=='*plan' then GV.once('plan:send',0.1,function() GV.sendPlan(true) end)
     else GV.once('send:'..id,0.1,function() GV.sendSnapshot(id,true) end) end
   end
 end
@@ -504,6 +542,7 @@ function GV.onMessage(msg,sender)
   if action=='Q' or action=='L' or action=='P' or action=='A' or action=='D' then GV.onRequestMessage(action,origin,rest,sender); return end
   if action=='S' or action=='M' then GV.onListMessage(action,origin,rest,sender); return end
   if action=='O' or action=='G' then GV.onOfferMessage(action,origin,rest,sender); return end
+  if action=='C' or action=='K' then GV.onPlanMessage(action,origin,rest,sender); return end
   local g,id=GV.guild(),nameId(origin)
   if not g or not id or not GV.isBank(id) then return end
   local senderId=(not isSecret(sender) and nameId(sender)) or '?'
@@ -530,8 +569,10 @@ function GV.onMessage(msg,sender)
       -- Someone holding our copy already asked; whatever answers them reaches us too.
       GV.cancel('ask:'..id)
     end
-  elseif action=='B' then
-    local stamp,hash,gold,bankStamp,count=rest:match('^(%d+)|(%d+)|(%d+)|(%d+)|(%d+)$')
+  elseif action=='B' or action=='U' then
+    local stamp,base,hash,gold,bankStamp,count
+    if action=='B' then stamp,hash,gold,bankStamp,count=rest:match('^(%d+)|(%d+)|(%d+)|(%d+)|(%d+)$')
+    else stamp,base,hash,gold,bankStamp,count=rest:match('^(%d+)|(%d+)|(%d+)|(%d+)|(%d+)|(%d+)$') end
     stamp,hash=tonumber(stamp),tonumber(hash)
     if not stamp then return end
     if stamp>=myStamp then GV.cancel('send:'..id); GV.cancel('offer:'..id) end
@@ -545,7 +586,7 @@ function GV.onMessage(msg,sender)
     local wanted=stamp>myStamp or (fromOwner and hash~=myHash)
     if not wanted or not plausible(stamp) then return end
     pending[id..'|'..senderId]={stamp=stamp,hash=hash,gold=tonumber(gold),bankStamp=tonumber(bankStamp),count=tonumber(count),
-      bags={},bank={},n=0,owner=origin,fromOwner=fromOwner,via=not isSecret(sender) and displayName(sender) or nil}
+      bags={},bank={},n=0,owner=origin,fromOwner=fromOwner,via=not isSecret(sender) and displayName(sender) or nil,base=tonumber(base)}
   elseif action=='I' then
     local p=pending[id..'|'..senderId]
     local stamp,list=rest:match('^(%d+)|(.*)$')
@@ -560,7 +601,19 @@ function GV.onMessage(msg,sender)
     local p=pending[slot]
     if not p or tonumber(rest)~=p.stamp then return end
     pending[slot]=nil
-    local snap={owner=p.owner,stamp=p.stamp,gold=p.gold,bankStamp=p.bankStamp,bags=p.bags,bank=p.bank,
+    local bags,bank=p.bags,p.bank
+    if p.base then
+      local cur=g.banks[id]
+      if not cur or cur.stamp~=p.base then
+        -- We missed the copy these changes build on: ask for the whole thing.
+        GV.once('ask:'..id,1+math.random()*2,function() GV.sendRequest(id) end)
+        return
+      end
+      bags,bank=copyTable(cur.bags),copyTable(cur.bank)
+      for item,n in pairs(p.bags) do bags[item]=(n>0) and n or nil end
+      for item,n in pairs(p.bank) do bank[item]=(n>0) and n or nil end
+    end
+    local snap={owner=p.owner,stamp=p.stamp,gold=p.gold,bankStamp=p.bankStamp,bags=bags,bank=bank,
       via=(not p.fromOwner) and p.via or nil,received=now()}
     snap.hash=GV.hash(snap)
     -- A dropped or mangled message leaves the snapshot incomplete; the next sync fetches it again.
@@ -569,6 +622,7 @@ function GV.onMessage(msg,sender)
     if current and current.stamp>=snap.stamp and not (p.fromOwner and current.hash~=snap.hash) then return end
     g.banks[id]=snap
     received=received+1
+    GV.recordGold(id,snap.stamp,snap.gold)
     GV.prime(snap); requestUpdate()
   end
 end
@@ -605,6 +659,8 @@ function GV.readRoster()
   -- A bank list that arrived before the roster could vouch for its sender.
   local d=GV.deferredList
   if d and next(roster) then GV.deferredList=nil; GV.applyManaged(d.gm,d.stamp,d.names) end
+  local pd=GV.deferredPlan
+  if pd and next(roster) then GV.deferredPlan=nil; GV.applyPlan(pd.by,pd.stamp,pd.text) end
 end
 -- Officers are ranks 0 (guild master) through officerRank.
 function GV.isOfficer(id)
@@ -627,7 +683,11 @@ function GV.requestPayload(r)
   local payload=table.concat({'Q',r.by,r.id,r.updated,r.status,r.bank,r.item,r.count,r.actor or '',r.approvedBy or '',r.note or ''},'|')
   return payload:sub(1,254)
 end
-local function keepFor(r) return isActive(r) and REQUEST_KEEP_ACTIVE or REQUEST_KEEP_CLOSED end
+-- Mailed requests are the guild's withdrawals log, so they're kept as long as donations.
+local function keepFor(r)
+  if isActive(r) then return REQUEST_KEEP_ACTIVE end
+  return r.status=='mailed' and 60*86400 or REQUEST_KEEP_CLOSED
+end
 function GV.pruneRequests()
   local g=GV.guild()
   if not g then return end
@@ -663,13 +723,45 @@ function GV.available(bankId,item)
   local g=GV.guild()
   local snap=g and g.banks[bankId]
   if not snap then return 0 end
+  if item==0 then return math.max(0,math.floor((snap.gold or 0)/10000)-(GV.reserved(bankId)[0] or 0)) end
   local held=(snap.bags and snap.bags[item] or 0)+(snap.bank and snap.bank[item] or 0)
   return math.max(0,held-(GV.reserved(bankId)[item] or 0))
 end
-function GV.describe(r,plain)
+-- Requests for gold use item 0, with the count in whole gold.
+function GV.requestLabel(r,plain)
+  if r.item==0 then return r.count..'g' end
   local name,link=GV.itemInfo(r.item)
-  local item=(not plain and link) or name or ('item #'..r.item)
-  return r.count..'x '..item..' from '..displayName(r.bank)..((r.note or '')~='' and (' - '..r.note) or '')
+  return r.count..'x '..((not plain and link) or name or ('item #'..r.item))
+end
+function GV.describe(r,plain)
+  return GV.requestLabel(r,plain)..' from '..displayName(r.bank)..((r.note or '')~='' and (' - '..r.note) or '')
+end
+function GV.requestCreated(r) return tonumber(r.id:match('%-(%d+)%-%d+$')) or r.updated end
+-- Items one member asked for in the last day, not counting denied or cancelled requests or gold.
+function GV.requestedToday(id)
+  local g,n=GV.guild(),0
+  if not g then return 0 end
+  for _,r in pairs(g.requests) do
+    if nameId(r.by)==id and r.item~=0 and r.status~='denied' and r.status~='cancelled' and now()-GV.requestCreated(r)<86400 then n=n+r.count end
+  end
+  return n
+end
+-- Officers can let small requests through without waiting: an approver's client online approves them.
+-- The bank toon goes first, officers a little later, so usually only one approval goes out.
+function GV.autoApprove(r)
+  local max=GV.rule('autoMax')
+  if max<=0 or r.item==0 or r.count>max or not GV.isApprover(myId()) then return end
+  local member=roster[nameId(r.by)]
+  if not member or type(member.rank)~='number' or isSecret(member.rank) or member.rank>GV.rule('autoRank') then return end
+  local limit=GV.rule('limit')
+  if limit>0 and GV.requestedToday(nameId(r.by))>limit then return end
+  if GV.available(nameId(r.bank),r.item)<r.count then return end
+  GV.once('auto:'..r.id,(nameId(r.bank)==myId()) and 1 or (2+math.random()*3),function()
+    local cur=GV.guild().requests[r.id]
+    if cur and cur.status=='open' and GV.setRequestStatus(cur,'approved') then
+      log('Approved automatically under the guild\'s rules: '..displayName(cur.by)..', '..GV.describe(cur)..'.')
+    end
+  end)
 end
 function GV.promptReload()
   if not settings().companion or not StaticPopup_Show or GetTime()-lastReloadPrompt<120 then return end
@@ -714,15 +806,25 @@ function GV.acceptRequest(r,relayed)
   local trusted=(r.status=='approved' or r.status=='denied') and next(roster)==nil and actor~=nil
   if not trusted and not GV.allowed(r,from,r.status,actor) then rejected=rejected+1; return false end
   g.requests[r.id]=r
-  if not GV.itemInfo(r.item) then loadingItems[r.item]=true end
+  if r.item>0 and not GV.itemInfo(r.item) then loadingItems[r.item]=true end
   requestUpdate()
   GV.notify(r,mine==nil,relayed)
+  if mine==nil and r.status=='open' then GV.autoApprove(r) end
   return true
 end
 function GV.createRequest(item,count,note,bank)
   local g=GV.guild()
   if not g then return end
   if GV.isTrial() then log('Trial accounts can\'t send requests in WoW Forever; ask a guildmate to request it for you.',true); return end
+  if item==0 and GV.rule('gold')==0 then log('The guild isn\'t taking gold requests right now.',true); return end
+  local limit=GV.rule('limit')
+  if limit>0 and item~=0 then
+    local used=GV.requestedToday(myId())
+    if used+count>limit then
+      log('The guild\'s limit is '..limit..' items a day per member, and you\'ve asked for '..used..' in the last 24 hours.',true)
+      return
+    end
+  end
   local r={id=myId()..'-'..now()..'-'..math.random(100,999),by=key(),updated=now(),status='open',
     bank=bank,item=item,count=math.max(1,math.min(9999,count)),note=clean(note,80)}
   g.requests[r.id]=r
@@ -862,6 +964,18 @@ function GV.onRequestMessage(action,origin,rest,sender)
   end
 end
 if StaticPopupDialogs then
+  StaticPopupDialogs.GUILDBANKTOONS_WANT={
+    text='How many %s does the guild want? (0 removes it from the list)',
+    button1=OKAY or 'OK',button2=CANCEL or 'Cancel',hasEditBox=true,timeout=0,whileDead=true,hideOnEscape=true,
+    OnShow=function(self,data)
+      local box=self.editBox or self.EditBox
+      if box then box:SetText(tostring((data and data.want) or '')); box:HighlightText() end
+    end,
+    OnAccept=function(self,data)
+      local box=self.editBox or self.EditBox
+      GV.setWant(data.item,tonumber(box and box:GetText() or '') or 0)
+    end,
+  }
   StaticPopupDialogs.GUILDBANKTOONS_CLEAR={
     text='Remove every bank toon you set for the guild?',
     button1=YES or 'Yes',button2=NO or 'No',timeout=0,whileDead=true,hideOnEscape=true,
@@ -1029,6 +1143,215 @@ function GV.gmChange(verb,name)
   return true
 end
 
+-- Guild plan: gold goals, wanted items and request rules -----------------------------------------------
+-- Officers and the guild master set these on the Guild tab. Like the bank list, the newest version goes to
+-- the whole guild and is passed along while whoever changed it is offline.
+--   C|me|stamp                        "this is the plan I hold"; anyone with a newer one offers it
+--   K|officer|stamp|part|total|data   the whole plan as ;-separated entries, split over `total` messages:
+--     g~id~toon~copper~name (toon: a bank toon's id, or * for all of them)   w~itemID~target   r~rule~number
+local RULE_DEFAULTS={limit=0,autoMax=0,autoRank=0,gold=1}
+local planParts={}
+function GV.plan()
+  local g=GV.guild()
+  if not g then return {goals={},wants={},rules={}} end
+  g.plan=g.plan or {goals={},wants={},rules={}}
+  return g.plan
+end
+function GV.rule(name)
+  local value=GV.plan().rules[name]
+  if value==nil then return RULE_DEFAULTS[name] end
+  return value
+end
+local function planClean(text) return (tostring(text or ''):gsub('[;~|\r\n]',' '):sub(1,40)) end
+function GV.encodePlan(p)
+  local entries={}
+  for id,goal in pairs(p.goals) do entries[#entries+1]=table.concat({'g',id,goal.toon or '*',goal.target,planClean(goal.name)},'~') end
+  for item,target in pairs(p.wants) do entries[#entries+1]='w~'..item..'~'..target end
+  for name,value in pairs(p.rules) do entries[#entries+1]='r~'..name..'~'..value end
+  table.sort(entries)
+  return entries
+end
+function GV.decodePlan(text)
+  local p={goals={},wants={},rules={}}
+  for entry in text:gmatch('[^;]+') do
+    local kind,a,b,c,d=entry:match('^(%a)~([^~]*)~?([^~]*)~?([^~]*)~?(.*)$')
+    if kind=='g' and a~='' and tonumber(c) then p.goals[a]={toon=b~='' and b or '*',target=tonumber(c),name=d}
+    elseif kind=='w' and tonumber(a) and tonumber(b) then p.wants[tonumber(a)]=tonumber(b)
+    elseif kind=='r' and RULE_DEFAULTS[a]~=nil and tonumber(b) then p.rules[a]=tonumber(b) end
+  end
+  return p
+end
+function GV.copyPlan()
+  local p,copy=GV.plan(),{goals={},wants={},rules={}}
+  for id,goal in pairs(p.goals) do copy.goals[id]={toon=goal.toon,target=goal.target,name=goal.name} end
+  for item,target in pairs(p.wants) do copy.wants[item]=target end
+  for name,value in pairs(p.rules) do copy.rules[name]=value end
+  return copy
+end
+function GV.sendPlan(asked)
+  local p=GV.plan()
+  if not p.stamp or not p.by then return end
+  if not asked and planParts.sentStamp==p.stamp and GetTime()-(planParts.sentAt or 0)<30 then return end
+  planParts.sentStamp,planParts.sentAt=p.stamp,GetTime()
+  local chunks,chunk,length={},{},0
+  for _,entry in ipairs(GV.encodePlan(p)) do
+    if length+#entry+1>200 and #chunk>0 then chunks[#chunks+1]=table.concat(chunk,';'); chunk,length={},0 end
+    chunk[#chunk+1]=entry; length=length+#entry+1
+  end
+  chunks[#chunks+1]=table.concat(chunk,';')
+  local head='K|'..p.by..'|'..p.stamp..'|'
+  for i,text in ipairs(chunks) do GV.queue(head..i..'|'..#chunks..'|'..text,asked) end
+end
+function GV.askPlan()
+  if not GV.guild() then return end
+  GV.queue('C|'..key()..'|'..(GV.plan().stamp or 0),true)
+  GV.collect('*plan')
+end
+-- On an officer's client: save a changed plan (from GV.copyPlan) and send it to everyone.
+function GV.setPlan(p)
+  GV.readRoster()
+  if not GV.isOfficer(myId()) then log('Only officers and the guild master can change goals, needs and rules.',true); return false end
+  p.by,p.stamp=key(),math.max(now(),(GV.plan().stamp or 0)+1)
+  GV.guild().plan=p
+  planParts.sentStamp=nil
+  GV.sendPlan(); requestUpdate()
+  return true
+end
+function GV.applyPlan(by,stamp,text)
+  local g=GV.guild()
+  if not g then return end
+  local p,mine=GV.decodePlan(text),GV.plan()
+  if nameId(by)==myId() and mine.stamp and mine.by and nameId(mine.by)==myId() then
+    -- We made the newest plan: re-stamp ours above a different copy going around.
+    if plausible(stamp) and stamp>=mine.stamp and table.concat(GV.encodePlan(p),';')~=table.concat(GV.encodePlan(mine),';') then
+      mine.stamp=stamp+1; planParts.sentStamp=nil
+      GV.once('plan:send',0.5,GV.sendPlan)
+    end
+    return
+  end
+  if stamp<=(mine.stamp or 0) or not plausible(stamp) then return end
+  -- Only an officer's plan counts; wait for the roster before deciding.
+  if next(roster)==nil then GV.deferredPlan={by=by,stamp=stamp,text=text}; return end
+  if not GV.isOfficer(nameId(by)) then rejected=rejected+1; return end
+  p.by,p.stamp=displayName(by),stamp
+  g.plan=p
+  requestUpdate()
+end
+function GV.onPlanMessage(action,origin,rest,sender)
+  local senderId=(not isSecret(sender) and nameId(sender)) or '?'
+  if senderId==myId() or not GV.guild() then return end
+  local mine=GV.plan().stamp or 0
+  if action=='C' then
+    local stamp=tonumber(rest)
+    if not stamp then return end
+    if stamp<mine then GV.maybeOffer('*plan',stamp)
+    elseif stamp>mine and plausible(stamp) then GV.once('plan:ask',1+math.random()*3,GV.askPlan) end
+    return
+  end
+  local stamp,part,total,text=rest:match('^(%d+)|(%d+)|(%d+)|(.*)$')
+  stamp,part,total=tonumber(stamp),tonumber(part),tonumber(total)
+  if not stamp or part<1 or total<1 or total>20 or part>total then return end
+  if stamp>=mine then GV.cancel('plan:send'); GV.cancel('offer:*plan') end
+  if stamp>mine then GV.cancel('plan:ask') end
+  GV.answered('*plan',senderId,stamp)
+  local slot=stamp..'|'..(nameId(origin) or '?')..'|'..senderId
+  local p=planParts[slot] or {total=total,texts={},got=0}
+  planParts[slot]=p
+  if p.total~=total or p.texts[part] then return end
+  p.texts[part]=text; p.got=p.got+1
+  if p.got<total then return end
+  planParts[slot]=nil
+  GV.applyPlan(origin,stamp,table.concat(p.texts,';'))
+end
+-- How many of an item are available across all bank toons, and how many the guild still needs.
+function GV.stockOf(item)
+  local n=0
+  for _,bank in ipairs(GV.bankList()) do n=n+GV.available(bank.id,item) end
+  return n
+end
+function GV.shortfall(item)
+  local target=GV.plan().wants[item]
+  if not target then return 0 end
+  return math.max(0,target-GV.stockOf(item))
+end
+-- Officers hear when a wanted item drops below what the guild wants. Only drops after the first look this
+-- session count, so logging in doesn't list everything that's already short.
+local shortSeen
+function GV.checkStock()
+  if not syncReady or not GV.guild() then return end
+  local first=shortSeen==nil
+  shortSeen=shortSeen or {}
+  local tell=not first and settings().lowStock and GV.isOfficer(myId())
+  for item,target in pairs(GV.plan().wants) do
+    local have=GV.stockOf(item)
+    if have<target then
+      if tell and not shortSeen[item] then
+        local name,link=GV.itemInfo(item)
+        GV.alert('Low stock: '..(link or name or ('item #'..item))..' is down to '..have..' (the guild wants '..target..').')
+      end
+      shortSeen[item]=true
+    else
+      shortSeen[item]=nil
+    end
+  end
+end
+
+-- Gold over time --------------------------------------------------------------------------------------
+-- Each client notes a bank toon's gold whenever a new copy arrives, so the Goals tab can chart it.
+--   g.gold[bankId] = { {stamp, copper}, ... } oldest first
+local GOLD_KEEP=90*86400
+function GV.recordGold(id,stamp,gold)
+  local g=GV.guild()
+  if not g or not id or not stamp or not gold then return end
+  g.gold=g.gold or {}
+  local list=g.gold[id] or {}
+  g.gold[id]=list
+  local last=list[#list]
+  if last and stamp<=last[1] then return end
+  if last and last[2]==gold and stamp-last[1]<6*3600 then return end
+  list[#list+1]={stamp,gold}
+  while #list>400 or (#list>1 and now()-list[1][1]>GOLD_KEEP) do table.remove(list,1) end
+end
+-- A bank toon's gold at time t, as last seen then (nil if we hadn't seen it yet).
+function GV.goldAt(id,t)
+  local list=GV.guild() and GV.guild().gold and GV.guild().gold[id]
+  if not list then return nil end
+  for i=#list,1,-1 do if list[i][1]<=t then return list[i][2] end end
+  return nil
+end
+-- Gold now: one bank toon's, or all of them for toon '*'.
+function GV.currentGold(toon)
+  local g,total=GV.guild(),0
+  if not g then return 0 end
+  for _,bank in ipairs(GV.bankList()) do
+    if toon=='*' or toon==nil or toon==bank.id then total=total+((g.banks[bank.id] and g.banks[bank.id].gold) or 0) end
+  end
+  return total
+end
+-- End-of-day gold for the last `days` days, oldest first; false where nothing was known yet.
+function GV.goldSeries(days,toon)
+  local ids={}
+  for _,bank in ipairs(GV.bankList()) do if toon=='*' or toon==nil or toon==bank.id then ids[#ids+1]=bank.id end end
+  local stamp=now()
+  local dayEnd=stamp
+  if date and time then
+    local t=date('*t',stamp)
+    t.hour,t.min,t.sec=23,59,59
+    dayEnd=time(t)
+  end
+  local out={}
+  for d=days-1,0,-1 do
+    local at=math.min(stamp,dayEnd-d*86400)
+    local total,known=0,false
+    for _,id in ipairs(ids) do
+      local v=GV.goldAt(id,at)
+      if v then total=total+v; known=true end
+    end
+    out[#out+1]=known and total or false
+  end
+  return out
+end
+
 -- Mail helper --------------------------------------------------------------------------------------
 -- On a bank character at a mailbox: a panel beside the mail window lists approved requests to mail.
 -- Fill opens Send Mail, addresses it and attaches the items from your bags (splitting a stack when the
@@ -1096,11 +1419,22 @@ function GV.fillMail(r)
   local name=displayName(r.by)
   if SendMailNameEditBox then SendMailNameEditBox:SetText(name) end
   if SendMailSubjectEditBox then
-    SendMailSubjectEditBox:SetText(('Guild bank: '..r.count..'x '..(GV.itemInfo(r.item) or ('item '..r.item))):sub(1,64))
+    SendMailSubjectEditBox:SetText(('Guild bank: '..GV.requestLabel(r,true)):sub(1,64))
   end
   local body=mailBodyBox()
   if body then body:SetText('Approved by '..displayName(r.approvedBy or r.actor or '?')..'.'..((r.note or '')~='' and (' Your note: '..r.note) or '')) end
-  local ok,err=GV.attachItems(r.item,r.count)
+  local ok,err
+  if r.item==0 then
+    local copper=r.count*10000
+    if ((GetMoney and GetMoney()) or 0)<copper then ok,err=false,'This toon doesn\'t have '..r.count..'g.'
+    else
+      if MoneyInputFrame_SetCopper and SendMailMoney then MoneyInputFrame_SetCopper(SendMailMoney,copper)
+      elseif SetSendMailMoney then SetSendMailMoney(copper) end
+      ok=true
+    end
+  else
+    ok,err=GV.attachItems(r.item,r.count)
+  end
   mailFilled={id=r.id,name=name}
   if ok then log('Mail to '..name..' is ready. Check it, then press Send.',true) else log(err,true) end
   requestUpdate()
@@ -1163,9 +1497,9 @@ function GV.refreshMailHelper()
     row:SetShown(r~=nil)
     if r then
       row.request=r
-      local name=GV.itemInfo(r.item) or ('item #'..r.item)
+      local name=GV.requestLabel(r,true):gsub('^%d+x ','')
       local marker=(mailFilled and mailFilled.id==r.id) and '|cff40ff40> |r' or ''
-      row.text:SetText(marker..r.count..'x '..name..'\n|cff909090to '..displayName(r.by)..((r.note or '')~='' and (' - '..r.note) or '')..'|r')
+      row.text:SetText(marker..(r.item==0 and r.count..'g' or r.count..'x '..name)..'\n|cff909090to '..displayName(r.by)..((r.note or '')~='' and (' - '..r.note) or '')..'|r')
     end
   end
   f.empty:SetShown(#list==0)
@@ -1235,18 +1569,20 @@ end
 -- Merges one log entry. Returns true when it changed something.
 function GV.acceptDonation(d)
   local g=GV.guild()
-  if not g or not nameId(d.by) or not nameId(d.bank) or (d.status~='sent' and d.status~='received') then return false end
+  if not g or not nameId(d.by) or not nameId(d.bank) or (d.status~='sent' and d.status~='received' and d.status~='moved') then return false end
   if not plausible(d.updated) or now()-d.updated>DONATION_KEEP then return false end
   local mine=g.donations[d.id]
-  if mine and (mine.updated>=d.updated or mine.status=='received') then return false end
+  if mine and (mine.updated>=d.updated or mine.status~='sent') then return false end
   -- Only the donor says it's on its way; only the bank toon it went to says it arrived.
   local actor=nameId(d.actor or d.by)
+  -- A move between bank toons is logged by the toon that received it.
   local ok=(d.status=='sent' and actor==nameId(d.by)) or (d.status=='received' and actor==nameId(d.bank) and GV.isBank(actor))
+    or (d.status=='moved' and actor==nameId(d.bank) and GV.isBank(actor) and GV.isBank(nameId(d.by)))
   if not ok then rejected=rejected+1; return false end
   g.donations[d.id]=d
   for id in pairs(d.items) do if not GV.itemInfo(id) then loadingItems[id]=true end end
   requestUpdate()
-  if d.status=='received' and nameId(d.by)==myId() then
+  if d.status=='received' and nameId(d.by)==myId() and not (mine and mine.status=='received') then
     GV.alert(displayName(d.bank)..' received your donation of '..GV.describeDonation(d,4)..'. Thank you!')
   end
   return true
@@ -1351,7 +1687,9 @@ function GV.scanInbox()
   for i=1,(GetInboxNumItems() or 0) do
     local _,_,sender,subject,money,cod,_,hasItem,_,returned=GetInboxHeaderInfo(i)
     local from=not isSecret(sender) and GV.senderId(sender)
-    if from and from~=me and not GV.isBank(from) and not returned and (cod or 0)==0 and ((money or 0)>0 or hasItem) then
+    if from and from~=me and not returned and (cod or 0)==0 and ((money or 0)>0 or hasItem) then
+      -- Mail from another bank toon is stock moving between them, not a donation.
+      local moved=GV.isBank(from)
       local title=(type(subject)=='string' and not isSecret(subject)) and subject or ''
       local ref=title:match('^'..DONATION_SUBJECT..' #(%w+)')
       local items,parts={},{}
@@ -1364,14 +1702,14 @@ function GV.scanInbox()
       end
       local id=from..'-'..(ref or ('m'..mailKey(title..'|'..(money or 0)..'|'..table.concat(parts,','))))
       local known=g.donations[id]
-      if not known or known.status~='received' then
+      if not known or known.status=='sent' then
         local d={id=id,by=(known and known.by) or displayName(roster[from].name),bank=key(),items=items,money=money or 0,
           note=(known and known.note) or '',created=(known and known.created) or now(),
-          updated=math.max(now(),known and (known.updated+1) or 0),status='received',actor=key()}
+          updated=math.max(now(),known and (known.updated+1) or 0),status=moved and 'moved' or 'received',actor=key()}
         g.donations[id]=d
         GV.queue(GV.donationPayload(d))
         requestUpdate()
-        log('Logged a donation from '..displayName(d.by)..': '..GV.describeDonation(d,4)..'.',true)
+        log((moved and 'Logged stock moved from ' or 'Logged a donation from ')..displayName(d.by)..': '..GV.describeDonation(d,4)..'.',true)
       end
     end
   end
@@ -1382,7 +1720,8 @@ end
 -- the bank toons down the side and their items beside them like a bag, totalled across toons; hover an item,
 -- or switch to the list, to see each toon's share.
 -- The window moves, resizes and scales, and remembers all three, so it fits any screen.
-local TABS={{key='items',label='Bank'},{key='requests',label='Requests'},{key='donations',label='Donations'},{key='settings',label='Settings'},{key='gm',label='Guild Master'}}
+local TABS={{key='items',label='Bank'},{key='requests',label='Requests'},{key='donations',label='Ledger'},{key='goals',label='Goals'},
+  {key='settings',label='Settings'},{key='gm',label='Guild'}}
 local ITEM_ROW_H=36
 local SIDEBAR_W=176
 local MUTED,ORANGE,GREEN,YELLOW='|cff8c8c8c','|cffff8040','|cff40ff40','|cffffd100'
@@ -1510,85 +1849,9 @@ local function itemTooltip(owner,item)
   GameTooltip:AddLine(' ')
 end
 
--- Donations tab -----------------------------------------------------------------------------------
+-- Shared by the Ledger tab and gold requests.
 local COIN_ICON='Interface\\Icons\\INV_Misc_Coin_01'
 local WEEK=7*86400
-function GV.buildDonationsPage(page)
-  ui.donFilter=segmented(page,{{'all','All'},{'week','This week'},{'mine','Mine'}},
-    function() return db.ui.donFilter end,function(v) db.ui.donFilter=v end,76)
-  pinRight(ui.donFilter,page,76,24)
-  ui.donSearch=editBox(page,200,'Search donor, bank toon or item',true)
-  ui.donSearch:SetPoint('TOPLEFT',8,-1); ui.donSearch:SetPoint('RIGHT',ui.donFilter[1],'LEFT',-12,0)
-  ui.donSearch:HookScript('OnTextChanged',function() requestUpdate() end)
-  ui.donInfo=label(page,'GameFontHighlightSmall'); ui.donInfo:SetPoint('TOPLEFT',4,-32); ui.donInfo:SetPoint('RIGHT',-24,0)
-  local list=CreateFrame('Frame',nil,page); list:SetPoint('TOPLEFT',0,-52); list:SetPoint('BOTTOMRIGHT',0,20)
-  ui.donList=GV.makeList(list,ITEM_ROW_H,GV.buildDonationRow,GV.drawDonationRow)
-  ui.donEmpty=label(list,'GameFontDisable','CENTER',true); ui.donEmpty:SetPoint('TOPLEFT',20,-40); ui.donEmpty:SetPoint('RIGHT',-46,0)
-  local hint=label(page,'GameFontDisableSmall'); hint:SetPoint('BOTTOMLEFT',4,3)
-  hint:SetText('To donate, open any mailbox and use the Donate panel beside the mail window.')
-end
-local function firstItem(d)
-  local best
-  for id,count in pairs(d.items or {}) do if not best or count>d.items[best] then best=id end end
-  return best
-end
-function GV.buildDonationRow(row)
-  itemRowParts(row)
-  row.status=label(row,'GameFontHighlightSmall','RIGHT'); row.status:SetPoint('TOPRIGHT',-10,-5)
-  row.when=label(row,'GameFontDisableSmall','RIGHT'); row.when:SetPoint('BOTTOMRIGHT',-10,5)
-  row.name:SetPoint('RIGHT',-110,0); row.detail:SetPoint('RIGHT',-110,0)
-  row:SetScript('OnEnter',function(self)
-    local d=self.entry
-    if not d then return end
-    GameTooltip:SetOwner(self,'ANCHOR_RIGHT')
-    GameTooltip:AddLine('Donation from '..displayName(d.by)..' to '..displayName(d.bank))
-    local ids={}
-    for id in pairs(d.items) do ids[#ids+1]=id end
-    table.sort(ids,function(a,b) return d.items[a]>d.items[b] end)
-    for _,id in ipairs(ids) do
-      local name,_,quality=GV.itemInfo(id)
-      local c=ITEM_QUALITY_COLORS and quality and ITEM_QUALITY_COLORS[quality]
-      GameTooltip:AddDoubleLine(name or ('Item #'..id),d.items[id],c and c.r or 1,c and c.g or 1,c and c.b or 1,1,1,1)
-    end
-    if (d.money or 0)>0 then GameTooltip:AddDoubleLine('Gold',GV.money(d.money),1,1,1,1,1,1) end
-    if (d.note or '')~='' then GameTooltip:AddLine('"'..d.note..'"',1,.82,0,true) end
-    GameTooltip:AddLine(d.status=='received' and ('Received by '..displayName(d.bank)..', '..ago(d.updated)) or ('Sent '..ago(d.created)..'; '..displayName(d.bank)..' hasn\'t opened it yet'),.6,.6,.6)
-    GameTooltip:Show()
-  end)
-  row:SetScript('OnLeave',function() GameTooltip:Hide() end)
-end
-function GV.drawDonationRow(row,d)
-  local item,icon=firstItem(d),nil
-  if item then icon=select(4,GV.itemInfo(item)) end
-  row.icon:SetTexture(item and (icon or QUESTION_ICON) or COIN_ICON)
-  row.name:SetText(displayName(d.by)..MUTED..'  to  |r'..displayName(d.bank)); row.name:SetTextColor(1,1,1)
-  row.detail:SetText(GV.describeDonation(d,3))
-  row.status:SetText(d.status=='received' and (GREEN..'Received|r') or (YELLOW..'On its way|r'))
-  row.when:SetText(ago(d.created))
-end
-function GV.refreshDonations()
-  ui.donFilter.refresh()
-  local me,term,filter=myId(),(ui.donSearch:GetText() or ''):lower(),db.ui.donFilter
-  local list,week,donors,gold={},0,{},0
-  for _,d in ipairs(GV.donationList()) do
-    if now()-d.created<=WEEK then week=week+1; donors[nameId(d.by)]=true; gold=gold+(d.money or 0) end
-    local keep=filter=='all' or (filter=='week' and now()-d.created<=WEEK) or (filter=='mine' and (nameId(d.by)==me or nameId(d.bank)==me))
-    if keep and term~='' then
-      keep=(d.by..' '..d.bank..' '..(d.note or '')..' '..GV.describeDonation(d)):lower():find(term,1,true)~=nil
-    end
-    if keep then list[#list+1]=d end
-  end
-  local people=0
-  for _ in pairs(donors) do people=people+1 end
-  ui.donList:SetData(list)
-  ui.donInfo:SetText(YELLOW..week..'|r donation'..(week==1 and '' or 's')..' this week from '..YELLOW..people..'|r guildmate'..(people==1 and '' or 's')
-    ..(gold>0 and ('   ·   '..GV.money(gold)..' in gold') or '')..'   ·   '..MUTED..'Thank you, everyone!|r')
-  local empty=''
-  if #list==0 then
-    empty=term~='' and ('Nothing matches "'..term..'".') or 'No donations yet.\n\nOpen any mailbox and use the Donate panel to send items or gold to a bank toon.'
-  end
-  ui.donEmpty:SetText(empty)
-end
 
 -- Donate panel ------------------------------------------------------------------------------------
 -- Beside the mail window for everyone who isn't a bank toon: pick a bank toon, add gold and a note,
@@ -1616,6 +1879,9 @@ function GV.buildDonatePanel()
   end)
   f.steps=label(f,'GameFontHighlightSmall','LEFT',true); f.steps:SetPoint('RIGHT',-16,0)
   f.attached=label(f,'GameFontHighlightSmall','LEFT',true); f.attached:SetPoint('RIGHT',-16,0)
+  f.needs=label(f,'GameFontHighlightSmall','LEFT',true); f.needs:SetPoint('RIGHT',-16,0)
+  f.addNeeded=button(f,'Add needed items',150)
+  f.addNeeded:SetScript('OnClick',GV.addNeededItems)
   f.send=button(f,'Send donation',150)
   f.send:SetScript('OnClick',function() if SendMailMailButton and SendMailMailButton.Click then SendMailMailButton:Click() end end)
   ui.donate=f
@@ -1663,10 +1929,20 @@ function GV.refreshDonatePanel()
   end
   f.attached:ClearAllPoints(); f.attached:SetPoint('TOPLEFT',f.steps,'BOTTOMLEFT',0,-8)
   f.attached:SetText(pending and (has and ('Attached: '..GV.describeDonation({items=items,money=money},5)) or (MUTED..'Nothing attached yet.|r')) or '')
+  -- What the guild wants, so donors know what helps most.
+  local wanted={}
+  for i,e in ipairs(GV.needEntries()) do
+    if i>4 or e.have>=e.target then break end
+    wanted[#wanted+1]=e.name..' ('..(e.target-e.have)..')'
+  end
+  f.needs:ClearAllPoints(); f.needs:SetPoint('TOPLEFT',f.attached,'BOTTOMLEFT',0,-10)
+  f.needs:SetText(#wanted>0 and (YELLOW..'The guild needs:|r '..table.concat(wanted,', ')) or '')
+  local inBags=pending and #GV.neededInBags()>0
+  f.addNeeded:ClearAllPoints(); f.addNeeded:SetPoint('BOTTOMLEFT',16,42); f.addNeeded:SetShown(inBags and true or false)
   f.send:ClearAllPoints(); f.send:SetPoint('BOTTOMLEFT',16,14)
   enable(f.send,pending~=nil and has)
   enable(f.fill,#f.banks>0)
-  f:SetHeight(math.max(300,-y+230))
+  f:SetHeight(math.max(340,-y+290))
 end
 
 -- Bag view of the Bank tab -------------------------------------------------------------------------
@@ -1720,9 +1996,12 @@ end
 -- Bank tab ----------------------------------------------------------------------------------------
 -- One entry per item across the bank toons shown (all, or the one picked in the sidebar): how many are
 -- available in total, and each toon's share, so 5 on one toon and 40 on another reads as 45 with both listed.
+-- where: all, bags, bank, or needs (the guild's wanted items, most needed first, held or not).
 function GV.itemRows(bankId,where,term,sort)
   local g,all,byItem=GV.guild(),{},{}
   if not g then return all end
+  local needs=where=='needs'
+  if needs then where='all' end
   for _,bank in ipairs(GV.bankList()) do
     local snap=g.banks[bank.id]
     if snap and (not bankId or bank.id==bankId) then
@@ -1743,17 +2022,31 @@ function GV.itemRows(bankId,where,term,sort)
       end
     end
   end
+  local wants=GV.plan().wants
+  if needs then
+    for item in pairs(wants) do
+      if not byItem[item] then
+        local e={id=item,total=0,available=0,reserved=0,toons={}}
+        byItem[item]=e; all[#all+1]=e
+      end
+    end
+  end
   local shown={}
   for _,e in ipairs(all) do
     local name,_,quality,icon=GV.itemInfo(e.id)
     e.name,e.quality,e.icon=name or ('Item #'..e.id),quality or 1,icon
-    if term=='' or e.name:lower():find(term,1,true) then
+    e.want=wants[e.id]
+    e.short=e.want and GV.shortfall(e.id) or 0
+    if (term=='' or e.name:lower():find(term,1,true)) and (not needs or e.want) then
       table.sort(e.toons,function(a,b) if a.available~=b.available then return a.available>b.available end return a.name<b.name end)
       local parts={}
+      if needs then
+        parts[#parts+1]=(e.short>0 and (ORANGE..'need '..e.short..'|r') or (GREEN..'enough|r'))..MUTED..' (wants '..e.want..')|r'
+      end
       if bankId then
         local t=e.toons[1]
-        if t.bags>0 then parts[#parts+1]=MUTED..'Bags|r '..t.bags end
-        if t.bank>0 then parts[#parts+1]=MUTED..'Bank|r '..t.bank end
+        if t and t.bags>0 then parts[#parts+1]=MUTED..'Bags|r '..t.bags end
+        if t and t.bank>0 then parts[#parts+1]=MUTED..'Bank|r '..t.bank end
       else
         for _,t in ipairs(e.toons) do parts[#parts+1]=MUTED..displayName(t.name)..'|r '..(t.bags+t.bank) end
       end
@@ -1762,6 +2055,7 @@ function GV.itemRows(bankId,where,term,sort)
     end
   end
   table.sort(shown,function(a,b)
+    if needs and a.short~=b.short then return a.short>b.short end
     if sort=='count' and a.available~=b.available then return a.available>b.available end
     if sort=='quality' and a.quality~=b.quality then return a.quality>b.quality end
     return a.name<b.name
@@ -1809,8 +2103,8 @@ function GV.buildItemsPage(page)
     for i,k in ipairs(SORT_ORDER) do if k==db.ui.sort then at=i end end
     db.ui.sort=SORT_ORDER[at%#SORT_ORDER+1]; requestUpdate()
   end)
-  ui.where=segmented(main,{{'all','All'},{'bags','Bags'},{'bank','Bank'}},function() return db.ui.filter end,function(v) db.ui.filter=v end,52)
-  ui.where[1]:SetPoint('TOPRIGHT',ui.sort,'TOPLEFT',-(8+2*54),0)
+  ui.where=segmented(main,{{'all','All'},{'bags','Bags'},{'bank','Bank'},{'needs','Needs'}},function() return db.ui.filter end,function(v) db.ui.filter=v end,50)
+  ui.where[1]:SetPoint('TOPRIGHT',ui.sort,'TOPLEFT',-(8+3*52),0)
   ui.search=editBox(main,160,'Search items',true)
   ui.search:SetPoint('TOPLEFT',8,-1); ui.search:SetPoint('RIGHT',ui.where[1],'LEFT',-12,0)
   ui.search:HookScript('OnTextChanged',function() requestUpdate() end)
@@ -1821,10 +2115,14 @@ function GV.buildItemsPage(page)
   ui.itemList=GV.makeList(ui.listBox,ITEM_ROW_H,GV.buildItemRow,GV.drawItemRow)
   ui.itemGrid=GV.makeList(ui.gridBox,SLOT+SLOT_GAP,GV.buildSlotRow,GV.drawSlotRow,26,true)
   ui.itemsEmpty=label(list,'GameFontDisable','CENTER',true); ui.itemsEmpty:SetPoint('TOPLEFT',20,-40); ui.itemsEmpty:SetPoint('RIGHT',-46,0)
-  local hint=label(main,'GameFontDisableSmall'); hint:SetPoint('BOTTOMLEFT',4,3)
-  hint:SetText('Click an item to request it   ·   Shift-click to link it   ·   Hover to see each toon\'s share')
   -- Gold along the bottom, like a bag's money line.
-  ui.money=label(main,'GameFontHighlight','RIGHT'); ui.money:SetPoint('BOTTOMRIGHT',-26,2)
+  ui.money=label(main,'GameFontHighlight','RIGHT'); ui.money:SetPoint('BOTTOMRIGHT',-26,4)
+  ui.goldRequest=button(main,'Request gold',110); ui.goldRequest:SetHeight(20); ui.goldRequest:SetPoint('RIGHT',ui.money,'LEFT',-12,0)
+  ui.goldRequest:SetScript('OnClick',GV.openGoldRequest)
+  local export=button(main,'Export',70); export:SetHeight(20); export:SetPoint('RIGHT',ui.goldRequest,'LEFT',-6,0)
+  export:SetScript('OnClick',function() GV.openExport('inventory') end)
+  local hint=label(main,'GameFontDisableSmall'); hint:SetPoint('BOTTOMLEFT',4,5); hint:SetPoint('RIGHT',export,'LEFT',-8,0)
+  hint:SetText('Click an item to request it   ·   Shift-click to link it   ·   Hover to see each toon\'s share')
 end
 -- Hovering an item, as a slot or a list row: the game's tooltip plus each toon's share.
 function GV.itemEntryTooltip(owner,e)
@@ -1836,11 +2134,15 @@ function GV.itemEntryTooltip(owner,e)
       if t.reserved>0 then parts[#parts+1]=ORANGE..t.reserved..' reserved|r' end
       GameTooltip:AddDoubleLine(displayName(t.name),table.concat(parts,', '),1,.82,0,1,1,1)
     end
-    GameTooltip:AddLine('Click to request   ·   Shift-click to link',.6,.6,.6)
+    if e.want then GameTooltip:AddDoubleLine('The guild wants',e.want..(e.short>0 and (ORANGE..' (need '..e.short..')|r') or ''),1,.82,0,1,1,1) end
+    GameTooltip:AddLine('Click to request   ·   Shift-click to link'..(GV.isOfficer(myId()) and '   ·   Alt-click to set how many the guild wants' or ''),.6,.6,.6,true)
     GameTooltip:Show()
 end
 function GV.itemEntryClick(e)
-  if IsShiftKeyDown() then linkItem(e.id) else GV.openRequestDialog(e) end
+  if IsShiftKeyDown() then linkItem(e.id)
+  elseif IsAltKeyDown and IsAltKeyDown() and GV.isOfficer(myId()) then
+    if StaticPopup_Show then StaticPopup_Show('GUILDBANKTOONS_WANT',e.name,nil,{item=e.id,want=e.want}) end
+  else GV.openRequestDialog(e) end
 end
 function GV.buildItemRow(row)
   itemRowParts(row)
@@ -1857,7 +2159,10 @@ function GV.drawItemRow(row,e)
   row.detail:SetText(e.where)
   row.count:SetText(e.available)
   row.count:ClearAllPoints()
-  if e.reserved>0 then
+  if db.ui.filter=='needs' and e.want then
+    row.count:SetPoint('TOPRIGHT',-10,-3)
+    row.held:SetText(MUTED..'of '..e.want..'|r'); row.held:Show()
+  elseif e.reserved>0 then
     row.count:SetPoint('TOPRIGHT',-10,-3)
     row.held:SetText(ORANGE..e.reserved..' reserved|r'); row.held:Show()
   else
@@ -1886,7 +2191,9 @@ function GV.refreshItems()
   local term=(ui.search:GetText() or ''):lower()
   local list=g and GV.itemRows(db.ui.bank,db.ui.filter,term,db.ui.sort or 'name') or {}
   ui.view.refresh()
-  local grid=db.ui.view~='list'
+  -- Needs read best as a list: each row says how many more the guild wants.
+  local grid=db.ui.view~='list' and db.ui.filter~='needs'
+  ui.goldRequest:SetShown(GV.rule('gold')==1 and #banks>0)
   ui.listBox:SetShown(not grid); ui.gridBox:SetShown(grid)
   if grid then ui.itemGrid:SetData(GV.slotRows(list,ui.gridBox:GetWidth())) else ui.itemList:SetData(list) end
   local snap=g and db.ui.bank and g.banks[db.ui.bank]
@@ -1908,7 +2215,9 @@ function GV.refreshItems()
   elseif db.ui.bank and not snap then
     empty='Waiting for this toon\'s contents.\n\nThey arrive when the toon, or a guildmate who has seen them, is online.'
   elseif #list==0 then
-    empty=(term~='' and ('Nothing matches "'..term..'".')) or (withData==0 and 'Waiting for the bank toons\' contents.') or 'Empty.'
+    empty=(term~='' and ('Nothing matches "'..term..'".'))
+      or (db.ui.filter=='needs' and 'The guild hasn\'t listed any wanted items yet. Officers add them on the Guild tab, or Alt-click an item here.')
+      or (withData==0 and 'Waiting for the bank toons\' contents.') or 'Empty.'
   end
   ui.itemsEmpty:SetText(empty)
 end
@@ -1932,7 +2241,8 @@ function GV.buildRequestDialog()
   d.choices={}
   d.amountLabel=label(d,'GameFontNormal'); d.amountLabel:SetText('How many')
   d.amount=editBox(d,56,''); d.amount:SetNumeric(true); d.amount:SetMaxLetters(4)
-  d.max=button(d,'Max',50); d.max:SetPoint('LEFT',d.amount,'RIGHT',8,0)
+  d.unit=label(d,'GameFontHighlight'); d.unit:SetPoint('LEFT',d.amount,'RIGHT',2,0)
+  d.max=button(d,'Max',50); d.max:SetPoint('LEFT',d.amount,'RIGHT',18,0)
   d.max:SetScript('OnClick',function() local t=d.toons[d.choice]; if t then d.amount:SetText(t.available) end end)
   d.noteLabel=label(d,'GameFontNormal'); d.noteLabel:SetText('Note')
   d.note=editBox(d,210,'Optional, e.g. "for my alt"'); d.note:SetMaxLetters(80)
@@ -1962,11 +2272,12 @@ function GV.openRequestDialog(e)
   if not ui.request then GV.buildRequestDialog() end
   local d=ui.request
   d.item,d.toons,d.choice=e.id,{},1
+  d.unit:SetText(e.unit or '')
   for _,t in ipairs(e.toons) do if t.available>0 then d.toons[#d.toons+1]=t end end
   for i,t in ipairs(d.toons) do if t.id==db.ui.bank then d.choice=i end end
   d.icon:SetTexture(e.icon or QUESTION_ICON)
   d.name:SetText(e.name); qualityColor(d.name,e.quality)
-  d.total:SetText(e.available..' available in total'..(e.reserved>0 and (MUTED..'   ('..e.reserved..' reserved)|r') or ''))
+  d.total:SetText(e.available..(e.unit or '')..' available in total'..(e.reserved>0 and (MUTED..'   ('..e.reserved..' reserved)|r') or ''))
   local y=-108
   for i,t in ipairs(d.toons) do
     local radio=d.choices[i]
@@ -1979,7 +2290,7 @@ function GV.openRequestDialog(e)
     end
     radio.index=i
     radio:ClearAllPoints(); radio:SetPoint('TOPLEFT',22,y)
-    radio.label:SetText(displayName(t.name)..'   '..MUTED..t.available..' available|r')
+    radio.label:SetText(displayName(t.name)..'   '..MUTED..t.available..(e.unit or '')..' available|r')
     radio:Show()
     y=y-22
   end
@@ -2149,6 +2460,7 @@ function GV.buildSettingsPage(page)
   heading('Requests')
   check('whispers','Whisper officers who don\'t have the addon','When you make a request, up to 3 online officers without the addon get a whisper.')
   check('companion','Offer a reload when requests change','Turn on where the Discord companion runs, so it posts requests right away.')
+  check('lowStock','Tell me when a wanted item runs low','For officers: a chat alert when stock of something on the guild\'s wanted list drops below the target.')
   check('donate','Show the Donate panel at mailboxes','Send items or gold to a bank toon in a few clicks; it goes in the Donations log.')
   heading('When playing a bank toon')
   check('mailHelper','Show the mail helper at mailboxes','Lists approved requests beside the mail window and fills in each mail.')
@@ -2176,7 +2488,7 @@ function GV.buildSettingsPage(page)
   ui.followAnchor=y
   ui.syncHeading=label(c,'GameFontNormal')
   ui.syncButton=button(c,'Sync now',100)
-  ui.syncButton:SetScript('OnClick',function() GV.syncAll(); GV.askManaged(); log('Asked the guild for the latest bank contents.',true) end)
+  ui.syncButton:SetScript('OnClick',function() GV.syncAll(); GV.askManaged(); GV.askPlan(); log('Asked the guild for the latest bank contents.',true) end)
   ui.statusText=label(c,'GameFontHighlightSmall','LEFT',true); ui.statusText:SetPoint('RIGHT',c,'RIGHT',-8,0)
   ui.settingsContent=c
 end
@@ -2261,6 +2573,595 @@ function GV.refreshGM()
   ui.gmFooter:SetText(footer)
 end
 
+-- Ledger tab --------------------------------------------------------------------------------------
+-- Everything that came in (donations, and stock moved between bank toons) and went out (mailed requests),
+-- newest first. Kind: in, move or out.
+function GV.ledger()
+  local g,list=GV.guild(),{}
+  if not g then return list end
+  for _,d in ipairs(GV.donationList()) do
+    list[#list+1]={kind=d.status=='moved' and 'move' or 'in',from=d.by,to=d.bank,items=d.items,money=d.money or 0,
+      when=d.created,status=d.status,note=d.note,updated=d.updated}
+  end
+  for _,r in pairs(g.requests) do
+    if r.status=='mailed' then
+      list[#list+1]={kind='out',from=r.bank,to=r.by,items=r.item>0 and {[r.item]=r.count} or {},money=r.item==0 and r.count*10000 or 0,
+        when=r.updated,status='mailed',note=r.note,approvedBy=r.approvedBy,updated=r.updated}
+    end
+  end
+  table.sort(list,function(a,b) if a.when~=b.when then return a.when>b.when end return a.from<b.from end)
+  return list
+end
+local LEDGER_STATUS={received=GREEN..'Received|r',sent=YELLOW..'On its way|r',moved='|cff80b0ffMoved|r',mailed=ORANGE..'Mailed out|r'}
+function GV.buildDonationsPage(page)
+  ui.donFilter=segmented(page,{{'all','All'},{'in','In'},{'out','Out'},{'mine','Mine'}},
+    function() return db.ui.donFilter end,function(v) db.ui.donFilter=v end,60)
+  pinRight(ui.donFilter,page,60,24)
+  ui.donSearch=editBox(page,200,'Search name, bank toon or item',true)
+  ui.donSearch:SetPoint('TOPLEFT',8,-1); ui.donSearch:SetPoint('RIGHT',ui.donFilter[1],'LEFT',-12,0)
+  ui.donSearch:HookScript('OnTextChanged',function() requestUpdate() end)
+  ui.donInfo=label(page,'GameFontHighlightSmall'); ui.donInfo:SetPoint('TOPLEFT',4,-32); ui.donInfo:SetPoint('RIGHT',-24,0)
+  local list=CreateFrame('Frame',nil,page); list:SetPoint('TOPLEFT',0,-52); list:SetPoint('BOTTOMRIGHT',0,26)
+  ui.donList=GV.makeList(list,ITEM_ROW_H,GV.buildDonationRow,GV.drawDonationRow)
+  ui.donEmpty=label(list,'GameFontDisable','CENTER',true); ui.donEmpty:SetPoint('TOPLEFT',20,-40); ui.donEmpty:SetPoint('RIGHT',-46,0)
+  local export=button(page,'Export',90); export:SetPoint('BOTTOMRIGHT',-24,0)
+  export:SetScript('OnClick',function() GV.openExport('ledger') end)
+  local hint=label(page,'GameFontDisableSmall'); hint:SetPoint('BOTTOMLEFT',4,5); hint:SetPoint('RIGHT',export,'LEFT',-8,0)
+  hint:SetText('To donate, open any mailbox and use the Donate panel beside the mail window.')
+end
+local function firstItem(e)
+  local best
+  for id,count in pairs(e.items or {}) do if not best or count>e.items[best] then best=id end end
+  return best
+end
+function GV.buildDonationRow(row)
+  itemRowParts(row)
+  row.status=label(row,'GameFontHighlightSmall','RIGHT'); row.status:SetPoint('TOPRIGHT',-10,-5)
+  row.when=label(row,'GameFontDisableSmall','RIGHT'); row.when:SetPoint('BOTTOMRIGHT',-10,5)
+  row.name:SetPoint('RIGHT',-110,0); row.detail:SetPoint('RIGHT',-110,0)
+  row:SetScript('OnEnter',function(self)
+    local e=self.entry
+    if not e then return end
+    GameTooltip:SetOwner(self,'ANCHOR_RIGHT')
+    local title=({['in']='Donation from ',move='Moved from ',out='Mailed out from '})[e.kind]
+    GameTooltip:AddLine(title..displayName(e.from)..' to '..displayName(e.to))
+    local ids={}
+    for id in pairs(e.items) do ids[#ids+1]=id end
+    table.sort(ids,function(a,b) return e.items[a]>e.items[b] end)
+    for _,id in ipairs(ids) do
+      local name,_,quality=GV.itemInfo(id)
+      local c=ITEM_QUALITY_COLORS and quality and ITEM_QUALITY_COLORS[quality]
+      GameTooltip:AddDoubleLine(name or ('Item #'..id),e.items[id],c and c.r or 1,c and c.g or 1,c and c.b or 1,1,1,1)
+    end
+    if e.money>0 then GameTooltip:AddDoubleLine('Gold',GV.money(e.money),1,1,1,1,1,1) end
+    if (e.note or '')~='' then GameTooltip:AddLine('"'..e.note..'"',1,.82,0,true) end
+    if e.kind=='out' and e.approvedBy then GameTooltip:AddLine('Approved by '..displayName(e.approvedBy),.6,.6,.6) end
+    if e.status=='sent' then GameTooltip:AddLine('Sent '..ago(e.when)..'; '..displayName(e.to)..' hasn\'t opened it yet',.6,.6,.6)
+    elseif e.kind~='out' then GameTooltip:AddLine('Received by '..displayName(e.to)..', '..ago(e.updated),.6,.6,.6) end
+    GameTooltip:Show()
+  end)
+  row:SetScript('OnLeave',function() GameTooltip:Hide() end)
+end
+function GV.drawDonationRow(row,e)
+  local item,icon=firstItem(e),nil
+  if item then icon=select(4,GV.itemInfo(item)) end
+  row.icon:SetTexture(item and (icon or QUESTION_ICON) or COIN_ICON)
+  row.name:SetText(displayName(e.from)..MUTED..'  to  |r'..displayName(e.to)); row.name:SetTextColor(1,1,1)
+  row.detail:SetText(GV.describeDonation(e,3))
+  row.status:SetText(LEDGER_STATUS[e.status] or e.status)
+  row.when:SetText(ago(e.when))
+end
+function GV.refreshDonations()
+  ui.donFilter.refresh()
+  local me,term,filter=myId(),(ui.donSearch:GetText() or ''):lower(),db.ui.donFilter
+  local list,donations,donors,gold,out={},0,{},0,0
+  for _,e in ipairs(GV.ledger()) do
+    if now()-e.when<=WEEK then
+      if e.kind=='in' then donations=donations+1; donors[nameId(e.from)]=true; gold=gold+e.money end
+      if e.kind=='out' then out=out+1 end
+    end
+    local keep=filter=='all' or (filter=='in' and e.kind=='in') or (filter=='out' and e.kind=='out')
+      or (filter=='mine' and (nameId(e.from)==me or nameId(e.to)==me))
+    if keep and term~='' then
+      keep=(e.from..' '..e.to..' '..(e.note or '')..' '..GV.describeDonation(e)):lower():find(term,1,true)~=nil
+    end
+    if keep then list[#list+1]=e end
+  end
+  local people=0
+  for _ in pairs(donors) do people=people+1 end
+  ui.donList:SetData(list)
+  ui.donInfo:SetText('This week: '..YELLOW..donations..'|r donation'..(donations==1 and '' or 's')..' from '..YELLOW..people..'|r guildmate'..(people==1 and '' or 's')
+    ..(gold>0 and (' ('..GV.money(gold)..')') or '')..'   ·   '..ORANGE..out..'|r mailed out   ·   '..MUTED..'Thank you, everyone!|r')
+  local empty=''
+  if #list==0 then
+    empty=term~='' and ('Nothing matches "'..term..'".') or 'Nothing here yet.\n\nOpen any mailbox and use the Donate panel to send items or gold to a bank toon.'
+  end
+  ui.donEmpty:SetText(empty)
+end
+
+-- Goals tab -------------------------------------------------------------------------------------------
+-- The guild bank's gold over time as a bar chart with the goals drawn across it, then each goal's progress
+-- and the items the guild needs most.
+function GV.buildGoalsPage(page)
+  ui.goldNow=label(page,'GameFontNormalLarge'); ui.goldNow:SetPoint('TOPLEFT',6,-4)
+  ui.goldChange=label(page,'GameFontHighlightSmall'); ui.goldChange:SetPoint('TOPLEFT',6,-28)
+  ui.chartDays=segmented(page,{{30,'30 days'},{90,'90 days'}},function() return db.ui.chartDays end,function(v) db.ui.chartDays=v end,72)
+  pinRight(ui.chartDays,page,72,24)
+  local chart=CreateFrame('Frame',nil,page)
+  chart:SetPoint('TOPLEFT',0,-50); chart:SetPoint('RIGHT',-24,0); chart:SetHeight(170)
+  local shade=chart:CreateTexture(nil,'BACKGROUND'); shade:SetAllPoints(); shade:SetColorTexture(0,0,0,.3)
+  chart.bars,chart.lines={},{}
+  chart.top=label(chart,'GameFontDisableSmall'); chart.top:SetPoint('TOPLEFT',6,-4)
+  chart.from=label(chart,'GameFontDisableSmall'); chart.from:SetPoint('BOTTOMLEFT',6,2)
+  chart.to=label(chart,'GameFontDisableSmall','RIGHT'); chart.to:SetPoint('BOTTOMRIGHT',-6,2); chart.to:SetText('Today')
+  chart.empty=label(chart,'GameFontDisable','CENTER'); chart.empty:SetPoint('CENTER')
+  ui.chart=chart
+  local list=CreateFrame('Frame',nil,page); list:SetPoint('TOPLEFT',0,-230); list:SetPoint('BOTTOMRIGHT')
+  ui.goalList=GV.makeList(list,40,function(row)
+    row.name=label(row,'GameFontHighlight'); row.name:SetPoint('TOPLEFT',10,-4); row.name:SetPoint('RIGHT',-170,0)
+    row.detail=label(row,'GameFontHighlightSmall'); row.detail:SetPoint('BOTTOMLEFT',10,5); row.detail:SetPoint('RIGHT',-170,0)
+    row.heading=label(row,'GameFontNormal'); row.heading:SetPoint('BOTTOMLEFT',4,6)
+    row.bar=CreateFrame('StatusBar',nil,row); row.bar:SetSize(150,14); row.bar:SetPoint('RIGHT',-10,0)
+    row.bar:SetStatusBarTexture('Interface\\TargetingFrame\\UI-StatusBar'); row.bar:SetMinMaxValues(0,1)
+    local back=row.bar:CreateTexture(nil,'BACKGROUND'); back:SetAllPoints(); back:SetColorTexture(0,0,0,.5)
+  end,function(row,e)
+    row.heading:SetShown(e.heading~=nil); row.name:SetShown(e.heading==nil); row.detail:SetShown(e.heading==nil); row.bar:SetShown(e.heading==nil)
+    if e.heading then row.heading:SetText(e.heading); return end
+    row.name:SetText(e.name); row.detail:SetText(e.detail)
+    row.bar:SetValue(math.min(1,e.progress))
+    if e.progress>=1 then row.bar:SetStatusBarColor(.25,.8,.25) else row.bar:SetStatusBarColor(1,.75,.1) end
+  end)
+end
+-- One goal's current gold and progress (0 to 1).
+function GV.goalProgress(goal)
+  local have=GV.currentGold(goal.toon)
+  return have,(goal.target>0) and have/goal.target or 1
+end
+local function toonName(id)
+  if not id or id=='*' then return 'All bank toons' end
+  for _,bank in ipairs(GV.bankList()) do if bank.id==id then return displayName(bank.name) end end
+  return id
+end
+function GV.goalEntries()
+  local list={}
+  for id,goal in pairs(GV.plan().goals) do
+    local have,progress=GV.goalProgress(goal)
+    list[#list+1]={id=id,goal=goal,name=goal.name..MUTED..'   '..toonName(goal.toon)..'|r',progress=progress,
+      detail=GV.money(have)..MUTED..' of |r'..GV.money(goal.target)..MUTED..'   ('..math.floor(progress*100+.5)..'%)|r'}
+  end
+  table.sort(list,function(a,b) if a.goal.target~=b.goal.target then return a.goal.target<b.goal.target end return a.id<b.id end)
+  return list
+end
+function GV.needEntries()
+  local list={}
+  for item,target in pairs(GV.plan().wants) do
+    local name,_,quality,icon=GV.itemInfo(item)
+    local have=GV.stockOf(item)
+    list[#list+1]={item=item,target=target,icon=icon,quality=quality,name=name or ('Item #'..item),have=have,
+      progress=target>0 and have/target or 1,detail=have..MUTED..' of |r'..target..(have<target and (ORANGE..'   need '..(target-have)..'|r') or (GREEN..'   enough|r'))}
+  end
+  table.sort(list,function(a,b) if a.progress~=b.progress then return a.progress<b.progress end return a.name<b.name end)
+  return list
+end
+function GV.refreshChart()
+  local chart,days=ui.chart,db.ui.chartDays or 30
+  local series=GV.goldSeries(days,'*')
+  local top,known=0,false
+  for _,v in ipairs(series) do if v then top=math.max(top,v); known=true end end
+  local goals={}
+  for _,goal in pairs(GV.plan().goals) do
+    if goal.toon=='*' then goals[#goals+1]=goal; top=math.max(top,goal.target) end
+  end
+  top=math.max(top,10000)*1.1
+  local width=(chart:GetWidth() or 600)-12
+  local height=(chart:GetHeight() or 170)-34
+  local step=width/days
+  for i=1,days do
+    local bar=chart.bars[i]
+    if not bar then
+      bar=CreateFrame('Button',nil,chart)
+      bar.fill=bar:CreateTexture(nil,'ARTWORK'); bar.fill:SetAllPoints()
+      bar:SetScript('OnEnter',function(self)
+        GameTooltip:SetOwner(self,'ANCHOR_TOP')
+        GameTooltip:AddLine(self.day)
+        GameTooltip:AddLine(GV.money(self.value),1,1,1)
+        GameTooltip:Show()
+      end)
+      bar:SetScript('OnLeave',function() GameTooltip:Hide() end)
+      chart.bars[i]=bar
+    end
+    local v=series[i]
+    bar:ClearAllPoints()
+    bar:SetPoint('BOTTOMLEFT',6+(i-1)*step,16)
+    bar:SetWidth(math.max(2,step-2))
+    bar:SetShown(v and true or false)
+    if v then
+      bar:SetHeight(math.max(1,v/top*height))
+      bar.value=v
+      bar.day=date and date('%b %d',now()-(days-i)*86400) or ('Day '..i)
+      bar.fill:SetColorTexture(1,.78,.2,i==days and .9 or .55)
+    end
+  end
+  for i=days+1,#chart.bars do chart.bars[i]:Hide() end
+  for i,goal in ipairs(goals) do
+    local line=chart.lines[i]
+    if not line then
+      line=chart:CreateTexture(nil,'OVERLAY'); line:SetHeight(1)
+      line.text=label(chart,'GameFontHighlightSmall','RIGHT')
+      chart.lines[i]=line
+    end
+    local y=16+goal.target/top*height
+    line:ClearAllPoints(); line:SetPoint('BOTTOMLEFT',6,y); line:SetPoint('RIGHT',chart,'RIGHT',-6,0)
+    line:SetColorTexture(.4,1,.4,.7); line:Show()
+    line.text:ClearAllPoints(); line.text:SetPoint('BOTTOMRIGHT',chart,'BOTTOMRIGHT',-8,y+2)
+    line.text:SetText(goal.name..'  '..GV.money(goal.target)); line.text:Show()
+  end
+  for i=#goals+1,#chart.lines do chart.lines[i]:Hide(); chart.lines[i].text:Hide() end
+  chart.top:SetText(GV.money(math.floor(top)))
+  chart.from:SetText(days..' days ago')
+  chart.empty:SetText(known and '' or 'No gold history yet. It builds up as bank toons report in.')
+end
+function GV.refreshGoals()
+  ui.chartDays.refresh()
+  local now7=GV.goldSeries(8,'*')
+  local current=GV.currentGold('*')
+  ui.goldNow:SetText('Guild bank gold: '..GV.money(current))
+  local week=now7[1]
+  if week then
+    local change=current-week
+    ui.goldChange:SetText((change>=0 and (GREEN..'+') or (ORANGE..'-'))..GV.money(math.abs(change))..'|r'..MUTED..' in the last 7 days|r')
+  else
+    ui.goldChange:SetText(MUTED..'Change over the last 7 days shows once there\'s a week of history.|r')
+  end
+  GV.refreshChart()
+  local list={}
+  local goals,needs=GV.goalEntries(),GV.needEntries()
+  list[#list+1]={heading='Goals'}
+  for _,e in ipairs(goals) do list[#list+1]=e end
+  if #goals==0 then list[#list+1]={name=MUTED..'No goals yet.|r',detail=MUTED..'Officers add them on the Guild tab.|r',progress=0} end
+  list[#list+1]={heading='What the guild needs'}
+  for i,e in ipairs(needs) do if i<=8 then list[#list+1]=e end end
+  if #needs==0 then list[#list+1]={name=MUTED..'No wanted items yet.|r',detail=MUTED..'Officers add them on the Guild tab.|r',progress=0} end
+  ui.goalList:SetData(list)
+end
+
+-- Guild tab: goal, need and rule editors ------------------------------------------------------------------
+-- Everyone can see these; only officers and the guild master can change them.
+local function canPlan() return GV.isOfficer(myId()) end
+local function readOnly(info)
+  info:SetText(canPlan() and 'Changes go to everyone in the guild.' or 'Only officers and the guild master can change these; everyone sees them.')
+end
+function GV.buildGoalEditor(page)
+  ui.goalInfo=label(page,'GameFontHighlightSmall','LEFT',true); ui.goalInfo:SetPoint('TOPLEFT',6,-2); ui.goalInfo:SetPoint('RIGHT',-24,0)
+  ui.goalName=editBox(page,200,'Goal, e.g. Raid consumables'); ui.goalName:SetPoint('TOPLEFT',12,-28); ui.goalName:SetMaxLetters(40)
+  ui.goalGold=editBox(page,80,'Gold'); ui.goalGold:SetPoint('LEFT',ui.goalName,'RIGHT',10,0); ui.goalGold:SetNumeric(true); ui.goalGold:SetMaxLetters(7)
+  ui.goalToon=button(page,'For: All bank toons',170); ui.goalToon:SetPoint('LEFT',ui.goalGold,'RIGHT',10,0)
+  ui.goalToon:SetScript('OnClick',function()
+    local ids={'*'}
+    for _,bank in ipairs(GV.bankList()) do ids[#ids+1]=bank.id end
+    local at=1
+    for i,id in ipairs(ids) do if id==(ui.goalToon.toon or '*') then at=i end end
+    ui.goalToon.toon=ids[at%#ids+1]; requestUpdate()
+  end)
+  ui.goalAdd=button(page,'Add goal',100); ui.goalAdd:SetPoint('LEFT',ui.goalToon,'RIGHT',10,0)
+  ui.goalAdd:SetScript('OnClick',function()
+    local name,gold=(ui.goalName:GetText() or ''):gsub('^%s+',''):gsub('%s+$',''),tonumber(ui.goalGold:GetText() or '')
+    if name=='' or not gold or gold<1 then log('Give the goal a name and an amount of gold.',true); return end
+    local p=GV.copyPlan()
+    local id=tostring(now()%100000)..math.random(10,99)
+    p.goals[id]={name=planClean(name),target=gold*10000,toon=ui.goalToon.toon or '*'}
+    if GV.setPlan(p) then ui.goalName:SetText(''); ui.goalGold:SetText('') end
+  end)
+  local list=CreateFrame('Frame',nil,page); list:SetPoint('TOPLEFT',0,-60); list:SetPoint('BOTTOMRIGHT')
+  ui.goalEditList=GV.makeList(list,40,function(row)
+    row.name=label(row,'GameFontHighlight'); row.name:SetPoint('TOPLEFT',10,-4); row.name:SetPoint('RIGHT',-100,0)
+    row.detail=label(row,'GameFontHighlightSmall'); row.detail:SetPoint('BOTTOMLEFT',10,5); row.detail:SetPoint('RIGHT',-100,0)
+    row.remove=button(row,'Remove',80); row.remove:SetHeight(20); row.remove:SetPoint('RIGHT',-8,0)
+    row.remove:SetScript('OnClick',function(self)
+      local p=GV.copyPlan(); p.goals[self:GetParent().entry.id]=nil; GV.setPlan(p)
+    end)
+  end,function(row,e)
+    row.name:SetText(e.name); row.detail:SetText(e.detail); row.remove:SetShown(canPlan())
+  end)
+  ui.goalEditEmpty=label(list,'GameFontDisable','CENTER',true); ui.goalEditEmpty:SetPoint('TOPLEFT',20,-30); ui.goalEditEmpty:SetPoint('RIGHT',-46,0)
+end
+function GV.refreshGoalEditor()
+  readOnly(ui.goalInfo)
+  for _,w in ipairs({ui.goalName,ui.goalGold,ui.goalToon,ui.goalAdd}) do w:SetShown(canPlan()) end
+  ui.goalToon:SetText('For: '..toonName(ui.goalToon.toon))
+  local list=GV.goalEntries()
+  ui.goalEditList:SetData(list)
+  ui.goalEditEmpty:SetText(#list==0 and 'No goals yet. Gold goals show on the Goals tab with a chart, and on Discord.' or '')
+end
+-- Fills the Needs editor's item box when an item is shift-clicked while it has the focus.
+function GV.hookItemBox()
+  local function fill(text)
+    if ui.needItem and ui.needItem:IsShown() and ui.needItem.HasFocus and ui.needItem:HasFocus() and type(text)=='string' then
+      ui.needItem:SetText(text)
+    end
+  end
+  if not hooksecurefunc then return end
+  if ChatFrameUtil and ChatFrameUtil.InsertLink then hooksecurefunc(ChatFrameUtil,'InsertLink',fill)
+  elseif ChatEdit_InsertLink then hooksecurefunc('ChatEdit_InsertLink',fill) end
+end
+function GV.setWant(item,count)
+  local p=GV.copyPlan()
+  p.wants[item]=(count and count>0) and count or nil
+  return GV.setPlan(p)
+end
+function GV.buildNeedEditor(page)
+  ui.needInfo=label(page,'GameFontHighlightSmall','LEFT',true); ui.needInfo:SetPoint('TOPLEFT',6,-2); ui.needInfo:SetPoint('RIGHT',-24,0)
+  ui.needItem=editBox(page,240,'Shift-click an item, or type its ID'); ui.needItem:SetPoint('TOPLEFT',12,-28)
+  ui.needCount=editBox(page,70,'How many'); ui.needCount:SetPoint('LEFT',ui.needItem,'RIGHT',10,0); ui.needCount:SetNumeric(true); ui.needCount:SetMaxLetters(5)
+  ui.needAdd=button(page,'Add or update',120); ui.needAdd:SetPoint('LEFT',ui.needCount,'RIGHT',10,0)
+  ui.needAdd:SetScript('OnClick',function()
+    local text=ui.needItem:GetText() or ''
+    local item=tonumber(text:match('item:(%d+)') or text:match('^%s*(%d+)%s*$'))
+    local count=tonumber(ui.needCount:GetText() or '')
+    if not item or not count then log('Shift-click an item into the box (or type its ID) and say how many the guild wants.',true); return end
+    if GV.setWant(item,count) then ui.needItem:SetText(''); ui.needCount:SetText('') end
+  end)
+  local list=CreateFrame('Frame',nil,page); list:SetPoint('TOPLEFT',0,-60); list:SetPoint('BOTTOMRIGHT')
+  ui.needEditList=GV.makeList(list,ITEM_ROW_H,function(row)
+    itemRowParts(row)
+    row.remove=button(row,'Remove',80); row.remove:SetHeight(20); row.remove:SetPoint('RIGHT',-8,0)
+    row.name:SetPoint('RIGHT',-100,0); row.detail:SetPoint('RIGHT',-100,0)
+    row.remove:SetScript('OnClick',function(self) GV.setWant(self:GetParent().entry.item,0) end)
+  end,function(row,e)
+    row.icon:SetTexture(e.icon or QUESTION_ICON)
+    row.name:SetText(e.name); qualityColor(row.name,e.quality)
+    row.detail:SetText(e.detail); row.remove:SetShown(canPlan())
+  end)
+  ui.needEditEmpty=label(list,'GameFontDisable','CENTER',true); ui.needEditEmpty:SetPoint('TOPLEFT',20,-30); ui.needEditEmpty:SetPoint('RIGHT',-46,0)
+end
+function GV.refreshNeedEditor()
+  readOnly(ui.needInfo)
+  for _,w in ipairs({ui.needItem,ui.needCount,ui.needAdd}) do w:SetShown(canPlan()) end
+  local list=GV.needEntries()
+  ui.needEditList:SetData(list)
+  ui.needEditEmpty:SetText(#list==0 and 'No wanted items yet. They show on the Bank tab under Needs, in the Donate panel, and on Discord. Officers can also Alt-click an item on the Bank tab.' or '')
+end
+local RULE_FIELDS={
+  {'limit','Daily limit per member','Most items one member can request in 24 hours. 0 means no limit.'},
+  {'autoMax','Approve small requests automatically','Requests of up to this many items are approved without waiting. 0 turns it off.'},
+  {'autoRank','...for ranks 0 to','Which ranks get automatic approval (0 is the guild master; higher numbers are lower ranks).'},
+}
+function GV.buildRulesEditor(page)
+  ui.ruleInfo=label(page,'GameFontHighlightSmall','LEFT',true); ui.ruleInfo:SetPoint('TOPLEFT',6,-2); ui.ruleInfo:SetPoint('RIGHT',-24,0)
+  ui.ruleBoxes={}
+  local y=-30
+  for _,field in ipairs(RULE_FIELDS) do
+    local name=label(page,'GameFontHighlight'); name:SetPoint('TOPLEFT',10,y); name:SetText(field[2])
+    local box=editBox(page,60,'0'); box:SetPoint('TOPLEFT',290,y+3); box:SetNumeric(true); box:SetMaxLetters(4)
+    local note=label(page,'GameFontDisableSmall','LEFT',true); note:SetPoint('TOPLEFT',10,y-17); note:SetPoint('RIGHT',-24,0); note:SetText(field[3])
+    box.rule=field[1]
+    ui.ruleBoxes[#ui.ruleBoxes+1]=box
+    y=y-48
+  end
+  ui.ruleGold=GV.make('CheckButton',page,{'UICheckButtonTemplate','InterfaceOptionsCheckButtonTemplate'})
+  ui.ruleGold:SetSize(26,26); ui.ruleGold:SetPoint('TOPLEFT',6,y)
+  local caption=label(page,'GameFontHighlight'); caption:SetPoint('LEFT',ui.ruleGold,'RIGHT',4,1); caption:SetText('Members can request gold')
+  ui.ruleSave=button(page,'Save rules',120); ui.ruleSave:SetPoint('TOPLEFT',10,y-40)
+  ui.ruleSave:SetScript('OnClick',function()
+    local p=GV.copyPlan()
+    for _,box in ipairs(ui.ruleBoxes) do p.rules[box.rule]=tonumber(box:GetText() or '') or 0 end
+    p.rules.gold=ui.ruleGold:GetChecked() and 1 or 0
+    if GV.setPlan(p) then ui.rulesDirty=false; log('Saved the guild\'s request rules.',true) end
+  end)
+  for _,box in ipairs(ui.ruleBoxes) do box:HookScript('OnTextChanged',function(_,user) if user then ui.rulesDirty=true end end) end
+  ui.ruleGold:HookScript('OnClick',function() ui.rulesDirty=true end)
+end
+function GV.refreshRulesEditor()
+  readOnly(ui.ruleInfo)
+  local edit=canPlan()
+  ui.ruleSave:SetShown(edit)
+  if edit then ui.ruleGold:Enable() else ui.ruleGold:Disable() end
+  -- Don't overwrite what an officer is typing.
+  if ui.rulesDirty then return end
+  for _,box in ipairs(ui.ruleBoxes) do
+    box:SetText(tostring(GV.rule(box.rule)))
+    if edit then box:Enable() else box:Disable() end
+  end
+  ui.ruleGold:SetChecked(GV.rule('gold')==1)
+end
+function GV.buildGuildPage(page)
+  ui.guildNav=segmented(page,{{'toons','Bank toons'},{'goals','Goals'},{'needs','Needs'},{'rules','Rules'}},
+    function() return db.ui.guildSub end,function(v) db.ui.guildSub=v end,96)
+  ui.guildNav[1]:SetPoint('TOPLEFT',4,0)
+  ui.guildSubs={}
+  for _,key in ipairs({'toons','goals','needs','rules'}) do
+    local sub=CreateFrame('Frame',nil,page); sub:SetPoint('TOPLEFT',0,-32); sub:SetPoint('BOTTOMRIGHT')
+    ui.guildSubs[key]=sub
+  end
+  GV.buildGMPage(ui.guildSubs.toons)
+  GV.buildGoalEditor(ui.guildSubs.goals)
+  GV.buildNeedEditor(ui.guildSubs.needs)
+  GV.buildRulesEditor(ui.guildSubs.rules)
+end
+function GV.refreshGuild()
+  ui.guildNav.refresh()
+  local sub=ui.guildSubs[db.ui.guildSub] and db.ui.guildSub or 'toons'
+  for key,frame in pairs(ui.guildSubs) do frame:SetShown(key==sub) end
+  if sub=='goals' then GV.refreshGoalEditor() elseif sub=='needs' then GV.refreshNeedEditor()
+  elseif sub=='rules' then GV.refreshRulesEditor() else GV.refreshGM() end
+end
+
+-- Export ----------------------------------------------------------------------------------------------
+-- Addons can't save files or use the clipboard, so the export is text in a box, selected, ready for Ctrl+C.
+local function csvField(value)
+  value=tostring(value==nil and '' or value)
+  if value:find('[,"\n]') then value='"'..value:gsub('"','""')..'"' end
+  return value
+end
+local function csvLine(fields)
+  local out={}
+  for i,v in ipairs(fields) do out[i]=csvField(v) end
+  return table.concat(out,',')
+end
+local function day(stamp) return date and date('%Y-%m-%d',stamp) or tostring(stamp) end
+local function plainMoney(copper)
+  copper=math.floor(copper or 0)
+  return math.floor(copper/10000)..'g '..(math.floor(copper/100)%100)..'s '..(copper%100)..'c'
+end
+function GV.exportText(kind,format)
+  local banks,lines=GV.bankList(),{}
+  local csv=format=='csv'
+  if kind=='inventory' then
+    local rows=GV.itemRows(nil,'all','','name')
+    local wants=GV.plan().wants
+    if csv then
+      local head={'Item ID','Item','Quality','Available','Reserved','Total'}
+      for _,bank in ipairs(banks) do head[#head+1]=displayName(bank.name) end
+      head[#head+1]='Guild wants'
+      lines[1]=csvLine(head)
+      for _,e in ipairs(rows) do
+        local held={}
+        for _,t in ipairs(e.toons) do held[t.id]=t.bags+t.bank end
+        local fields={e.id,e.name,e.quality,e.available,e.reserved,e.total}
+        for _,bank in ipairs(banks) do fields[#fields+1]=held[bank.id] or 0 end
+        fields[#fields+1]=wants[e.id] or ''
+        lines[#lines+1]=csvLine(fields)
+      end
+    else
+      lines[1]='Guild bank, '..day(now())..' ('..plainMoney(GV.currentGold('*'))..')'
+      for _,e in ipairs(rows) do
+        local parts={}
+        for _,t in ipairs(e.toons) do parts[#parts+1]=displayName(t.name)..' '..(t.bags+t.bank) end
+        lines[#lines+1]=e.name..': '..e.available..((e.reserved>0) and (' ('..e.reserved..' reserved)') or '')..' - '..table.concat(parts,', ')
+      end
+    end
+  elseif kind=='ledger' then
+    if csv then lines[1]=csvLine({'Date','Type','From','To','Items','Gold','Status','Note'}) end
+    for _,e in ipairs(GV.ledger()) do
+      local items=GV.describeDonation({items=e.items,money=0})
+      if csv then
+        lines[#lines+1]=csvLine({day(e.when),({['in']='Donation',move='Move',out='Withdrawal'})[e.kind],displayName(e.from),displayName(e.to),
+          items=='nothing' and '' or items,e.money>0 and plainMoney(e.money) or '',e.status,e.note or ''})
+      else
+        local what=GV.describeDonation({items=e.items,money=0})
+        if what=='nothing' then what='' end
+        if e.money>0 then what=(what~='' and (what..' and ') or '')..plainMoney(e.money) end
+        local verb=({['in']=' donated ',move=' moved ',out=' mailed out '})[e.kind]
+        lines[#lines+1]=day(e.when)..': '..displayName(e.from)..verb..what..' to '..displayName(e.to)..(e.status=='sent' and ' (on its way)' or '')
+      end
+    end
+  else
+    local series={}
+    for _,bank in ipairs(banks) do series[#series+1]=GV.goldSeries(90,bank.id) end
+    local total=GV.goldSeries(90,'*')
+    if csv then
+      local head={'Date'}
+      for _,bank in ipairs(banks) do head[#head+1]=displayName(bank.name) end
+      head[#head+1]='Total'
+      lines[1]=csvLine(head)
+    end
+    for i=1,90 do
+      if total[i] then
+        local date_=day(now()-(90-i)*86400)
+        if csv then
+          local fields={date_}
+          for b=1,#banks do fields[#fields+1]=series[b][i] and math.floor(series[b][i]/10000) or '' end
+          fields[#fields+1]=math.floor(total[i]/10000)
+          lines[#lines+1]=csvLine(fields)
+        else
+          lines[#lines+1]=date_..': '..plainMoney(total[i])
+        end
+      end
+    end
+  end
+  return table.concat(lines,'\n')
+end
+function GV.buildExportDialog()
+  local d=GV.make('Frame',UIParent,{'BasicFrameTemplateWithInset'},'GuildBankToonsExport')
+  d:SetSize(600,440); d:SetPoint('CENTER'); d:SetFrameStrata('DIALOG'); d:SetToplevel(true); d:SetClampedToScreen(true)
+  d:SetMovable(true); d:EnableMouse(true); d:RegisterForDrag('LeftButton')
+  d:SetScript('OnDragStart',d.StartMoving); d:SetScript('OnDragStop',d.StopMovingOrSizing)
+  table.insert(UISpecialFrames,'GuildBankToonsExport')
+  local title=d.TitleText or label(d,'GameFontHighlight','CENTER')
+  if not d.TitleText then title:SetPoint('TOP',0,-6) end
+  title:SetText('Export')
+  d.kind=segmented(d,{{'inventory','Inventory'},{'ledger','Ledger'},{'gold','Gold history'}},function() return db.ui.exportKind end,function(v) db.ui.exportKind=v end,104)
+  d.kind[1]:SetPoint('TOPLEFT',14,-32)
+  d.format=segmented(d,{{'csv','CSV'},{'text','Text'}},function() return db.ui.exportFormat end,function(v) db.ui.exportFormat=v end,60)
+  d.format[1]:SetPoint('TOPRIGHT',d,'TOPRIGHT',-(16+62),-32)
+  local scroll=GV.make('ScrollFrame',d,{'UIPanelScrollFrameTemplate'},'GuildBankToonsExportScroll')
+  scroll:SetPoint('TOPLEFT',16,-64); scroll:SetPoint('BOTTOMRIGHT',-34,40)
+  local box=CreateFrame('EditBox',nil,scroll)
+  box:SetMultiLine(true); box:SetAutoFocus(false); box:SetWidth(540); box:SetMaxLetters(0)
+  box:SetFontObject(ChatFontNormal or GameFontHighlightSmall)
+  box:SetScript('OnEscapePressed',function() d:Hide() end)
+  -- Read-only: typing puts the export back, still selected.
+  box:SetScript('OnTextChanged',function(self,user) if user then self:SetText(d.text or ''); self:HighlightText() end end)
+  scroll:SetScrollChild(box)
+  d.box=box
+  local hint=label(d,'GameFontDisableSmall'); hint:SetPoint('BOTTOMLEFT',16,14)
+  hint:SetText('Press Ctrl+C to copy, then paste into a spreadsheet, Discord or a text file.')
+  ui.export=d
+end
+function GV.refreshExport()
+  local d=ui.export
+  if not d or not d:IsShown() then return end
+  d.kind.refresh(); d.format.refresh()
+  local wanted=db.ui.exportKind..'|'..db.ui.exportFormat
+  if d.shownKey==wanted then return end
+  d.shownKey=wanted
+  d.text=GV.exportText(db.ui.exportKind,db.ui.exportFormat)
+  d.box:SetText(d.text); d.box:SetFocus(); d.box:HighlightText()
+end
+function GV.openExport(kind)
+  if not ui.export then GV.buildExportDialog() end
+  db.ui.exportKind=kind or db.ui.exportKind
+  ui.export.shownKey=nil
+  ui.export:Show()
+  GV.refreshExport()
+end
+
+-- Request gold ----------------------------------------------------------------------------------------
+function GV.openGoldRequest()
+  local g=GV.guild()
+  if not g then return end
+  if GV.rule('gold')==0 then log('The guild isn\'t taking gold requests right now.',true); return end
+  local e={id=0,name='Gold',icon=COIN_ICON,quality=1,available=0,reserved=GV.reservedGold(),unit='g',toons={}}
+  for _,bank in ipairs(GV.bankList()) do
+    local snap=g.banks[bank.id]
+    if snap then
+      local n=GV.available(bank.id,0)
+      e.toons[#e.toons+1]={id=bank.id,name=snap.owner or bank.name,available=n}
+      e.available=e.available+n
+    end
+  end
+  table.sort(e.toons,function(a,b) return a.available>b.available end)
+  GV.openRequestDialog(e)
+end
+function GV.reservedGold()
+  local n=0
+  for _,bank in ipairs(GV.bankList()) do n=n+(GV.reserved(bank.id)[0] or 0) end
+  return n
+end
+
+-- Donate: add what the guild needs --------------------------------------------------------------------------
+-- Attaches wanted items from your bags, up to what the guild still needs of each.
+function GV.neededInBags()
+  local bags,out=GV.scanContainers(GV.bagIds()),{}
+  for item in pairs(GV.plan().wants) do
+    local short=GV.shortfall(item)
+    if short>0 and (bags[item] or 0)>0 then out[#out+1]={item=item,count=math.min(short,bags[item])} end
+  end
+  table.sort(out,function(a,b) return a.count>b.count end)
+  return out
+end
+function GV.addNeededItems()
+  local added={}
+  for _,need in ipairs(GV.neededInBags()) do
+    local ok,err=GV.attachItems(need.item,need.count)
+    if not ok then log(err,true); break end
+    added[#added+1]=need.count..'x '..(GV.itemInfo(need.item) or ('item #'..need.item))
+  end
+  if #added>0 then log('Attached what the guild needs: '..table.concat(added,', ')..'.',true)
+  else log('Nothing in your bags is on the guild\'s wanted list right now.',true) end
+  requestUpdate()
+end
+
 -- Frame -------------------------------------------------------------------------------------------
 local function screenSize()
   local w=UIParent and UIParent.GetWidth and UIParent:GetWidth()
@@ -2279,7 +3180,7 @@ function GV.placeWindow()
   local sw,sh=screenSize()
   window:ClearAllPoints()
   window:SetScale(s.scale or 1)
-  window:SetSize(s.w or math.min(800,sw-60),s.h or math.min(560,sh-160))
+  window:SetSize(s.w or math.min(860,sw-60),s.h or math.min(580,sh-160))
   if s.point then window:SetPoint(s.point[1],UIParent,s.point[2],s.point[3],s.point[4])
   else window:SetPoint('CENTER',UIParent,'CENTER',0,40) end
 end
@@ -2288,8 +3189,8 @@ function GV.buildWindow()
   window=f
   f:SetFrameStrata('HIGH'); f:SetToplevel(true); f:SetClampedToScreen(true)
   f:SetMovable(true); f:SetResizable(true); f:EnableMouse(true); f:RegisterForDrag('LeftButton')
-  if f.SetResizeBounds then f:SetResizeBounds(720,420,1600,1200)
-  elseif f.SetMinResize then f:SetMinResize(720,420); f:SetMaxResize(1600,1200) end
+  if f.SetResizeBounds then f:SetResizeBounds(780,440,1600,1200)
+  elseif f.SetMinResize then f:SetMinResize(780,440); f:SetMaxResize(1600,1200) end
   f:SetScript('OnDragStart',f.StartMoving)
   f:SetScript('OnDragStop',function(self) self:StopMovingOrSizing(); GV.saveWindow() end)
   f:SetScript('OnSizeChanged',function() requestUpdate() end)
@@ -2331,8 +3232,9 @@ function GV.buildWindow()
   GV.buildItemsPage(ui.pages.items)
   GV.buildRequestsPage(ui.pages.requests)
   GV.buildDonationsPage(ui.pages.donations)
+  GV.buildGoalsPage(ui.pages.goals)
   GV.buildSettingsPage(ui.pages.settings)
-  GV.buildGMPage(ui.pages.gm)
+  GV.buildGuildPage(ui.pages.gm)
   GV.placeWindow()
   f:Hide()
 end
@@ -2356,8 +3258,10 @@ end
 function GuildBankToons_OnCompartmentClick() GV.toggle() end
 function GV.refresh()
   updatePending=false; sinceUpdate=0
+  GV.checkStock()
   GV.refreshMailHelper()
   GV.refreshDonatePanel()
+  GV.refreshExport()
   if not window or not window:IsShown() then return end
   local open=GV.guild() and GV.activeRequestCount() or 0
   local tab=ui.tabs[2]
@@ -2369,8 +3273,9 @@ function GV.refresh()
   local mode=db.ui.mode
   if mode=='requests' then GV.refreshRequests()
   elseif mode=='donations' then GV.refreshDonations()
+  elseif mode=='goals' then GV.refreshGoals()
   elseif mode=='settings' then GV.refreshSettings()
-  elseif mode=='gm' then GV.refreshGM()
+  elseif mode=='gm' then GV.refreshGuild()
   else GV.refreshItems() end
 end
 
@@ -2503,12 +3408,14 @@ SlashCmdList.GUILDBANKTOONS=function(input)
   if not db then return end
   local g=GV.guild()
   if command=='' then GV.toggle()
-  elseif command=='sync' then GV.syncAll(); GV.askManaged(); log('Asked the guild for the latest bank contents.',true)
+  elseif command=='sync' then GV.syncAll(); GV.askManaged(); GV.askPlan(); log('Asked the guild for the latest bank contents.',true)
   elseif command=='status' then GV.status()
   elseif command=='add' or command=='remove' then GV.follow(arg,command=='add')
   elseif command=='settings' or command=='options' or command=='config' then GV.open('settings')
   elseif command=='gm' then GV.open('gm')
-  elseif command=='donations' then GV.open('donations')
+  elseif command=='donations' or command=='ledger' then GV.open('donations')
+  elseif command=='goals' then GV.open('goals')
+  elseif command=='export' then GV.openExport(arg~='' and arg or nil)
   elseif command=='bank' or command=='banks' then GV.bankCommand(arg)
   elseif command=='tag' then
     log('Add this to the guild info (Guild > Guild Information): |cffffd100[GBT:'..(arg~='' and arg or key())..']|r',true)
@@ -2591,6 +3498,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     GV.hookTooltips()
     GV.hookMail()
     GV.buildMinimapButton()
+    GV.hookItemBox()
     pcall(GV.registerOptions)
     requestRoster()
     log('v'..VERSION..' loaded. Type /gbt to open the guild bank.')
@@ -2599,7 +3507,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     end
     -- Probe first so our name matches what guildmates see before the real sync goes out.
     later(2,function() GV.queue('V|'..key()..'|'..VERSION) end)
-    later(5,function() syncReady=true; GV.readTags(); GV.readRoster(); GV.syncAll(); GV.askManaged() end)
+    later(5,function() syncReady=true; GV.readTags(); GV.readRoster(); GV.syncAll(); GV.askManaged(); GV.askPlan() end)
     later(7,GV.syncRequests)
   elseif event=='PLAYER_LOGOUT' then
     -- SavedVariables are written now, which is what the Discord companion picks up.
