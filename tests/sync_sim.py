@@ -19,6 +19,7 @@ function Obj:Hide() rawset(self,'_shown',false) end
 function Obj:SetShown(v) rawset(self,'_shown',v and true or false) end
 function Obj:IsShown() return rawget(self,'_shown')==true end
 function Obj:GetHeight() return 300 end
+function Obj:GetWidth() return 600 end
 function Obj:SetText(v) rawset(self,'_text',v) end
 function Obj:GetText() return rawget(self,'_text') end
 function Obj:SetScript(name,fn) rawset(self,'_'..name,fn) end
@@ -36,7 +37,16 @@ MailFrame=setmetatable({},Obj); function MailFrame:IsShown() return env.mailOpen
 SendMailNameEditBox=editBox(); SendMailSubjectEditBox=editBox(); SendMailBodyEditBox=editBox()
 env.attached={}
 ClickSendMailItemButton=function(i) table.insert(env.attached,{slot=i,from=env.cursor}); env.cursor=nil end
-GetSendMailItem=function(i) for _,a in ipairs(env.attached) do if a.slot==i then return 'item' end end end
+GetSendMailItem=function(i)
+  if SENDITEMS and SENDITEMS[i] then return 'Item'..SENDITEMS[i][1],SENDITEMS[i][1],nil,SENDITEMS[i][2],1 end
+  for _,a in ipairs(env.attached) do if a.slot==i then return 'item' end end
+end
+SetSendMailMoney=function(c) env.sendMoney=c end
+GetSendMailMoney=function() return env.sendMoney or 0 end
+-- INBOX: {{sender=, subject=, money=, items={{id,count},...}}, ...}
+GetInboxNumItems=function() return INBOX and #INBOX or 0 end
+GetInboxHeaderInfo=function(i) local m=INBOX[i]; return nil,nil,m.sender,m.subject,m.money or 0,0,30,#(m.items or {})>0,false,false end
+GetInboxItem=function(i,a) local it=INBOX[i].items and INBOX[i].items[a]; if it then return 'Item'..it[1],it[1],nil,it[2],1 end end
 ClearCursor=function() env.cursor=nil end
 SendMail=function(to) env.mailedTo=to end
 hooksecurefunc=function(name,fn) local orig=_G[name]; _G[name]=function(...) local r=orig(...); fn(...); return r end end
@@ -313,5 +323,43 @@ GBT(m1).openRequestDialog(cloth[0]); bus.run(1)
 check('the request dialog picks the toon with the most available', GBT(m1).bestToon(2589)=='Vault Keeper')
 GBT(gm).open('gm'); bus.run(1)
 check('every tab draws without errors', True)
+
+# --- donations ---
+def donations(c):
+    g=c.L.globals().GuildBankToonsDB.guilds["Verdant"]
+    return {k:v for k,v in g.donations.items()} if g.donations else {}
+m1.env.mailOpen=True; m1.fire('MAIL_SHOW'); bus.run(1)
+GBT(m1).startDonation('Vault Keeper',20000,'for the raid')
+subject=m1.L.globals().SendMailSubjectEditBox.text
+check('donate fills the mail to the bank toon with a reference', m1.L.globals().SendMailNameEditBox.text=='Vault Keeper' and subject.startswith('Guild bank donation #'))
+m1.L.execute('SENDITEMS={{2589,20},{2592,3}}')
+m1.L.globals().SendMail('Vault Keeper',subject,''); m1.fire('MAIL_SEND_SUCCESS'); bus.run(5)
+did=[d for d in donations(officer).values() if d.by=='Alice']
+check('a sent donation reaches the guild log as on its way', len(did)==1 and did[0].status=='sent' and did[0]['items'][2589]==20 and did[0].money==20000)
+bank.L.execute('INBOX={{sender="Alice", subject=%r, money=20000, items={{2589,20},{2592,3}}}, {sender="Pete", subject="hi", money=0, items={{4306,10}}}}'.replace('%r','"'+subject+'"'))
+bank.env.mailOpen=True; bank.fire('MAIL_SHOW'); bus.run(5)
+d=[d for d in donations(officer).values() if d.by=='Alice'][0]
+check('the bank toon confirms the donation when it opens its mailbox', d.status=='received' and len([x for x in donations(officer).values() if x.by=='Alice'])==1)
+check('the donor is thanked when it arrives', any('received your donation' in l for l in m1.logs))
+pete=[d for d in donations(officer).values() if 'Pete' in d.by]
+check('mail from a guildmate without the addon is logged as a donation', len(pete)==1 and pete[0]['items'][4306]==10 and pete[0].status=='received')
+bank.fire('MAIL_INBOX_UPDATE'); bus.run(3)
+check('opening the mailbox again logs nothing twice', len(donations(officer))==2)
+evil.L.eval('''function(stamp) C_ChatInfo.SendAddonMessage('GBTOONS',"D|Mallory|mallory-x|"..stamp.."|received|Vault Keeper|0|"..stamp.."|19019:1|Mallory|",'GUILD') end''')(int(SERVER0+clock['t']))
+bus.run(3)
+check('only the bank toon can confirm a donation', 'mallory-x' not in donations(officer))
+m2.logout(); bus.run(2); m2.login(); bus.run(25)
+check('donations sync to a guildmate who logs in later', len(donations(m2))==2)
+GBT(m1).open('donations'); bus.run(1); GBT(m1).refreshDonations()
+GBT(m1).open('items'); m1.L.globals().GuildBankToonsDB.ui.view='grid'; GBT(m1).refreshItems()
+m1.L.globals().GuildBankToonsDB.ui.view='list'; GBT(m1).refreshItems()
+check('donations tab and both bank views draw', True)
+
+# --- trial accounts (Forever blocks their addon messages) ---
+before=bus.count; known=len(requests_of(officer))
+m2.L.execute('IsTrialAccount=function() return true end')
+slash(m2,'request 2589 1'); slash(m2,'sync'); bus.run(10)
+check('a trial account sends nothing', len(requests_of(officer))==known and any('Trial accounts' in l for l in m2.logs))
+m2.L.execute('IsTrialAccount=nil')
 print('messages sent total:',bus.count)
 sys.exit(0 if ok else 1)
