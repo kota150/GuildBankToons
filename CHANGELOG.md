@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+- Alts with the same first name could be taken for each other for a moment at login, and an alt could briefly publish its bags as a bank toon's. Characters are now told apart by their character ID, and nothing is published for a bank toon until the character's full name is confirmed.
+- WoW Forever names written as "First-Surname" (and with another ruleset's realm added, like "-CAMWOWUS2Realm2PvE") were cut down to the first name, so two characters sharing a first name were treated as one. Names are now read as first name and surname in every form, the same way GuildForge does, and your own surname comes straight from the game at login. The Discord companion reads them the same way.
+- On Classic Era, guilds with the same name on different realms no longer share data. On Forever guilds stay keyed by name, since guildmates report different realms; saved data moves to the right key automatically.
+
 ### Added
 - Gold goals with a Goals tab: a bar chart of the guild bank's gold over 30 or 90 days with goal lines, progress bars, and the week's change. Goals also show on Discord.
 - Needs: officers set target amounts for items. The Bank tab's Needs view, the Donate panel's Add needed items button, and low-stock alerts for officers use them.

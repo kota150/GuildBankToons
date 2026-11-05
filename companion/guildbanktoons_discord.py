@@ -254,7 +254,7 @@ def build_message(guild_name, snap, names, link_base, reserved=None):
     bank_stamp = int(snap.get("bankStamp") or 0)
     footer = "Guild Bank Toons snapshot" + (f" via {snap['via']}" if snap.get("via") else " from the bank character")
     summary = {
-        "title": f"🏦 {owner.split('-')[0]}",
+        "title": f"🏦 {short(owner)}",
         "description": f"**Gold:** {money(snap.get('gold'))}\n**Guild:** {guild_name}"
                        + ("" if bank_stamp else "\n_Bank not opened yet on this character._"),
         "color": 0xD8AA55,
@@ -280,12 +280,15 @@ FINAL = {"denied", "mailed", "cancelled"}
 
 
 def short(name):
-    return (name or "?").split("-")[0]
+    """A character's name for display. WoW: Forever names are first name and surname ("Vault Keeper", sometimes
+    written "Vault-Keeper"); the addon saves them without realms, but a realm the game adds always has digits."""
+    name = re.sub(r"-[^-]*\d.*$", "", name or "?")
+    return name.replace("-", " ").strip() or "?"
 
 
 def name_id(name):
-    """Same identity the addon uses: the name without any -Realm, ignoring case and spaces."""
-    return short(name).replace(" ", "").lower()
+    """Same identity the addon uses: first name and surname, ignoring case, spaces and dashes."""
+    return re.sub(r"[\s-]", "", short(name)).lower()
 
 
 def mentions(text):

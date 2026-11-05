@@ -66,7 +66,10 @@ C_Container={PickupContainerItem=function(b,s) env.cursor={bag=b,slot=s,count=en
 GetItemInfo=function(id) return 'Item'..id,'|Hitem:'..id..'|h',1 end
 GetTime=function() return env.now() end
 GetServerTime=function() return env.server() end
-UnitName=function() return env.unit end
+-- WoW: Forever: UnitName gives the first name and the surname (when the client knows it yet).
+UnitName=function() return env.unit,env.surname end
+GetBuildInfo=function() return '1.16.1','70425','Nov 1 2026',16001 end
+UnitGUID=function() return env.guid end
 GetRealmName=function() return 'Nek\'Rosh' end
 IsInGuild=function() return true end
 GetGuildInfo=function() return 'Verdant' end
@@ -79,7 +82,8 @@ NUM_BAG_SLOTS=4; NUM_BANKBAGSLOTS=6; BANK_CONTAINER=-1
 class Client:
     def __init__(s,name,bus,unit=None):
         s.L=LuaRuntime(unpack_returned_tuples=True); s.name=name; s.bus=bus; s.online=False
-        s.env=s.L.table_from({'frames':s.L.table(),'name':name,'unit':unit or name,'guildinfo':'Bank stuff [GBT:Vault Keeper]','gold':0,'bags':s.L.table()})
+        first,_,last=name.partition(' ')
+        s.env=s.L.table_from({'frames':s.L.table(),'name':name,'unit':unit or first,'surname':last or None,'guid':'Player-1-'+name.replace(' ',''),'guildinfo':'Bank stuff [GBT:Vault Keeper]','gold':0,'bags':s.L.table()})
         s.env.now=lambda:clock['t']; s.env.server=lambda:int(SERVER0+clock['t'])
         s.env.send=lambda p,m,c: bus.send(s,p,m)
         s.env.later=lambda sec,fn: bus.later(s,sec,fn)
@@ -113,7 +117,7 @@ class Client:
         s.env.bags=t
     def snap(s,who='vaultkeeper'):
         db=s.L.globals().GuildBankToonsDB
-        g=db and db.guilds['Verdant']
+        g=db and db.guilds["Verdant"]
         b=g and g.banks[who]
         if not b: return None
         return dict(stamp=b.stamp,hash=b.hash,via=b.via,gold=b.gold,bags=dict(b.bags.items()) if b.bags else {},bank=dict(b.bank.items()) if b.bank else {})
@@ -121,14 +125,18 @@ class Bus:
     def __init__(s): s.clients=[]; s.timers=[]; s.count=0; s.ranks={}; s.always_online=set(); s.log=[]
     def roster(s):
         return sorted(s.ranks)
+    # How Forever writes a character in senders and the roster: First-Surname, sometimes with a realm
+    # added (our own, or another ruleset's with digits in it).
+    suffix={'Alice':'-NekRosh','Olivia Stone':'-CAMWOWUS2Realm2PvE','Coin Purse':'-NekRosh'}
+    def wire(s,name): return name.replace(' ','-')+s.suffix.get(name,'')
     def member(s,i):
         name=s.roster()[int(i)-1]
         online=name in s.always_online or any(c.online and c.name==name for c in s.clients)
-        return (name+"-Nek'Rosh",'',s.ranks[name],0,'','','','',online)
+        return (s.wire(name),'',s.ranks[name],0,'','','','',online)
     def send(s,frm,p,m):
         s.count+=1; s.log.append((frm.name,m))
         if getattr(frm,'mute',None) and frm.mute(m): return
-        sender=frm.name+'-Nek\'Rosh'
+        sender=s.wire(frm.name)
         for c in s.clients:
             if c.online: c.fire('CHAT_MSG_ADDON',p,m,'GUILD',sender)
     def later(s,c,sec,fn): s.timers.append([clock['t']+sec,c,fn])
@@ -144,6 +152,8 @@ class Bus:
 bus=Bus()
 bank=Client('Vault Keeper',bus,'Vault'); m1=Client('Alice',bus); m2=Client('Bob',bus); evil=Client('Mallory',bus)
 officer=Client('Olivia Stone',bus,'Olivia')
+# This client's UnitName gives no surname yet, so it has to learn its full name from its own message.
+officer.env.surname=None
 gm=Client('Gwen Master',bus,'Gwen'); purse=Client('Coin Purse',bus,'Coin')
 bus.clients=[bank,m1,m2,evil,officer,gm,purse]
 # Pete is an officer who doesn't run the addon.
@@ -152,12 +162,19 @@ ok=True
 def check(label,cond):
     global ok; ok&=bool(cond); print(('PASS ' if cond else 'FAIL ')+label)
 
+ids=None
+def forms_ok():
+    g=bank.L.globals().GuildBankToons
+    forms=["Vault Keeper","Vault-Keeper","vault keeper","Vault-Keeper-NekRosh","Vault-Keeper-Nek'Rosh","Vault Keeper-CAMWOWUS2Realm2PvE","Vault-Keeper-CAMWOWUS2Realm2PvE"]
+    return all(g.nameId(f)=='vaultkeeper' for f in forms) and g.baseName('Vault-Keeper-CAMWOWUS2Realm2PvE')=='Vault Keeper' and g.nameId('Alice-NekRosh')=='alice'
 bank.env.gold=50000; bank.setbags([[2589,20],[2589,20],[14047,5]],bank=[[4306,100]])
 bank.login(); m1.login()
 bank.fire('BANKFRAME_OPENED'); bus.run(1); bank.fire('BANKFRAME_CLOSED')
 bus.run(30)
 s=m1.snap(); b=bank.snap()
-check('bank alt learned its surname from its own echo', bank.L.globals().GuildBankToonsDB.knownAs.Vault=='Vault Keeper')
+check('Forever names match in every form the game writes them (First-Surname, spaces, added realms)', forms_ok())
+check('UnitName\'s surname gives the full name straight away', bank.L.globals().GuildBankToons and m1.L.globals().GuildBankToonsDB.guilds["Verdant"].banks.vaultkeeper.owner=='Vault Keeper')
+check('bank alt learned its surname from its own echo', bank.L.globals().GuildBankToonsDB.knownAs['Player-1-VaultKeeper']=='Vault Keeper')
 check('bank alt scanned bags and bank', b and b['bags'].get(2589)==40 and b['bank'].get(4306)==100)
 check('online member got snapshot directly from bank alt', s and s['hash']==b['hash'] and s['via'] is None)
 
@@ -228,13 +245,13 @@ def tooltip(c,item):
 m2.logout()
 bank.setbags([[2589,20],[2589,20],[2589,5]]); bank.fire('BAG_UPDATE_DELAYED'); bus.run(15)
 officer.login(); bus.run(20)
-check('officer learned surname', officer.L.globals().GuildBankToonsDB.knownAs.Olivia=='Olivia Stone')
+check('officer learned surname', officer.L.globals().GuildBankToonsDB.knownAs['Player-1-OliviaStone']=='Olivia Stone')
 m1.L.globals().GuildBankToonsDB.settings.companion=True
 slash(m1,'request 2589 30 for my alt'); bus.run(12)
 r=latest(officer)
 check('officer receives request', r and r.status=='open' and r.count==30 and r.note=='for my alt')
 check('officer client alerted', any('requests 30x' in l for l in officer.logs))
-check('requester whispered only the officer without the addon', [w[1] for w in m1.whispers]==["Pete-Nek'Rosh"])
+check('requester whispered only the officer without the addon', [w[1] for w in m1.whispers]==["Pete"])
 check('requester got the Discord reload prompt', 'GUILDBANKTOONS_RELOAD' in m1.popups)
 rid=r.id; stamp=int(r.updated)+5
 evil.L.eval("""function(id,stamp) C_ChatInfo.SendAddonMessage('GBTOONS',"Q|Alice-Nek'Rosh|"..id.."|"..stamp.."|approved|Vault Keeper|2589|30|Mallory|Mallory|for my alt",'GUILD') end""")(rid,stamp)
@@ -292,7 +309,7 @@ evil.L.eval('''function(stamp) C_ChatInfo.SendAddonMessage('GBTOONS',"M|Mallory|
 bus.run(3)
 check('a list from someone who is not the guild master is ignored', managed(m1)==['coinpurse','sparechange'])
 gm.logout(); m2.logout(); bus.run(2)
-m2.saved.guilds['Verdant'].managed=m2.L.table(); m2.saved.guilds['Verdant'].managedStamp=None
+m2.saved.guilds["Verdant"].managed=m2.L.table(); m2.saved.guilds["Verdant"].managedStamp=None
 m2.login(); bus.run(20)
 check('member logging in while the guild master is offline gets the list relayed', managed(m2)==['coinpurse','sparechange'])
 evil.L.eval('''function(stamp) C_ChatInfo.SendAddonMessage('GBTOONS',"M|Gwen Master|"..stamp.."|1|1|Mallory",'GUILD') end''')(int(SERVER0+clock['t'])+5)
@@ -475,6 +492,21 @@ exp=subprocess.run([sys.executable,comp,'--savedvars',sv,'--export',os.path.join
 files=sorted(os.listdir(os.path.join(tmp,'out'))) if os.path.isdir(os.path.join(tmp,'out')) else []
 check('companion writes inventory, ledger and gold CSV files', exp.returncode==0 and files==['gold.csv','inventory.csv','ledger.csv'])
 if dry.returncode or exp.returncode: print(dry.stderr[-800:], exp.stderr[-800:])
+
+# --- alts: another character on the bank toon's account with the same first name ---
+bank.logout(); bus.run(2)
+kept=m1.snap()
+bank.name='Vault Smith'; bank.env.guid='Player-1-VaultSmith'; bank.env.surname=None; bus.ranks['Vault Smith']=4
+bank.setbags([[19019,1]])
+bank.login(); bank.fire('BAG_UPDATE_DELAYED'); bus.run(15)
+saved=bank.L.globals().GuildBankToonsDB
+check('an alt sharing a first name learns its own full name', saved.knownAs['Player-1-VaultSmith']=='Vault Smith' and saved.knownAs['Player-1-VaultKeeper']=='Vault Keeper')
+check('an alt sharing a first name never speaks for the bank toon', m1.snap()['hash']==kept['hash'] and bank.snap() and bank.snap()['hash']==kept['hash'])
+bank.logout(); bus.run(2)
+bank.name='Vault Keeper'; bank.env.guid='Player-1-VaultKeeper'; bank.env.surname='Keeper'; del bus.ranks['Vault Smith']
+bank.setbags([[2589,20],[2589,20],[2589,6]])
+bank.login(); bus.run(20)
+check('back on the bank toon, it is itself again', bank.L.globals().GuildBankToonsDB.knownAs['Player-1-VaultKeeper']=='Vault Keeper' and m1.snap()['hash']==bank.snap()['hash'])
 
 # --- trial accounts (Forever blocks their addon messages) ---
 before=bus.count; known=len(requests_of(officer))

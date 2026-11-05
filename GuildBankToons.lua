@@ -56,10 +56,47 @@ end
 -- Server time, so stamps from different players' machines compare fairly.
 local function now() return (GetServerTime and GetServerTime()) or (time and time()) or 0 end
 local cachedPlayer
--- WoW: Forever characters are known by first name and surname. Identity is that name alone: any
--- "-Realm" the server appends to a sender is dropped, and spaces and case don't matter.
+-- WoW: Forever (interface 16xxx) knows characters by first name and surname, and has no realms that matter:
+-- guildmates can report different ones.
+GV.forever=(function()
+  local iface=GetBuildInfo and select(4,GetBuildInfo())
+  return type(iface)=='number' and iface>=16000 and iface<17000
+end)()
+-- Realm names written in message senders drop spaces and punctuation ("Nek'Rosh" -> "NekRosh").
+local function normalizeRealm(server) return (tostring(server or ''):gsub('[^%w]',''):lower()) end
+local ownRealm
+local function myRealm()
+  if not ownRealm then
+    local realm=GetRealmName and GetRealmName()
+    if type(realm)=='string' and not isSecret(realm) and realm~='' then ownRealm=normalizeRealm(realm) end
+  end
+  return ownRealm
+end
+-- A character's name without any realm. Identity is that name alone, ignoring spaces and case.
+-- Forever writes the surname after a space or a dash ("First Surname", "First-Surname"), and the game may
+-- add a realm: ours, or another one, which always has digits ("First-Surname-CAMWOWUS2Realm2PvE");
+-- names never do. On Classic Era the part after the first dash is the realm.
 local function baseName(name)
   if type(name)~='string' or isSecret(name) then return nil end
+  local own=myRealm()
+  if own then
+    local start=1
+    while true do
+      local dash=name:find('-',start,true)
+      if not dash then break end
+      if normalizeRealm(name:sub(dash+1))==own then name=name:sub(1,dash-1); break end
+      start=dash+1
+    end
+  end
+  if GV.forever then
+    local parts={}
+    for part in name:gmatch('[^%s%-]+') do
+      if part:find('%d') or #parts==2 then break end
+      parts[#parts+1]=part
+    end
+    if #parts==0 then return nil end
+    return table.concat(parts,' ')
+  end
   local character=name:match('^([^-]+)') or name
   character=character:gsub('^%s+',''):gsub('%s+$','')
   if character=='' then return nil end
@@ -67,16 +104,36 @@ local function baseName(name)
 end
 local function nameId(name)
   local character=baseName(name)
-  return character and character:gsub('%s',''):lower()
+  return character and (character:gsub('%s',''):lower())
 end
+GV.nameId,GV.baseName=nameId,baseName
 local function displayName(name) return baseName(name) or name end
+-- This character, across sessions, apart from the account's other characters: its GUID (several alts can
+-- share a first name, which is all UnitName may give at login).
+local function charKey()
+  local guid=UnitGUID and UnitGUID('player')
+  if type(guid)=='string' and not isSecret(guid) and guid~='' then return guid end
+  local name=UnitName('player')
+  return (type(name)=='string' and not isSecret(name)) and ('name:'..name) or nil
+end
+-- Whether we know this character's full name: learned from our own message this session, or remembered for
+-- this exact character. Until then we don't speak for a bank toon.
+local nameConfirmed=false
 -- UnitName may return only the first name; GV.learnOwnName() records the full name the server puts on
--- our own messages, keyed by UnitName.
+-- our own messages, for this character.
 local function playerName()
   if cachedPlayer then return cachedPlayer end
-  local name=UnitName('player')
+  local name,surname=UnitName('player')
+  -- On Forever, UnitName's second value is the surname, so the full name is known straight away.
+  if GV.forever and type(name)=='string' and not isSecret(name) and type(surname)=='string' and not isSecret(surname) and surname~='' then
+    cachedPlayer=name..' '..surname
+    nameConfirmed=true
+    return cachedPlayer
+  end
   if name and not isSecret(name) then
-    cachedPlayer=(db and db.knownAs[name]) or name
+    local known=db and charKey() and db.knownAs[charKey()]
+    cachedPlayer=known or name
+    if known then nameConfirmed=true end
   end
   return cachedPlayer
 end
@@ -84,11 +141,15 @@ local function key() return playerName() or 'Unknown' end
 local function myId() return nameId(key()) end
 -- Our own guild addon messages echo back with the sender name the server uses for us.
 function GV.learnOwnName(sender)
-  local character=baseName(sender)
-  local base=UnitName('player')
-  if not character or character==cachedPlayer or not base or isSecret(base) then return end
+  local character,me=baseName(sender),charKey()
+  if not character or not me then return end
+  nameConfirmed=true
+  db.knownAs[me]=character
+  if character==cachedPlayer then return end
   cachedPlayer=character
-  db.knownAs[base]=character
+  -- A different name than we assumed: start over as the right character.
+  updatePending=true
+  if syncReady then GV.syncAll() end
 end
 local function senderMatches(sender,who)
   if isSecret(sender) then return false end
@@ -115,12 +176,13 @@ end
 function GV.initDB()
   GuildBankToonsDB=GuildBankToonsDB or {}
   db=GuildBankToonsDB
-  db.schema=1
   db.guilds=db.guilds or {}
   -- Item names and qualities seen by this client, so the Discord export can name items.
   db.items=db.items or {}
+  -- Per character (by GUID): full name, and the last bank visit. Version 1 keyed these by first name, which
+  -- two alts can share, so those entries are dropped.
+  if (db.schema or 1)<2 then db.knownAs,db.ownBank={},{} end
   db.knownAs=db.knownAs or {}
-  -- UnitName -> {items, stamp}: this account's characters' last bank visit.
   db.ownBank=db.ownBank or {}
   db.ui=db.ui or {}
   db.ui.filter=db.ui.filter or 'all'
@@ -147,20 +209,32 @@ function GV.initDB()
   -- On bank characters: show the mail helper at mailboxes, and optionally fill the first approved request.
   if db.settings.mailHelper==nil then db.settings.mailHelper=true end
   if db.settings.autofill==nil then db.settings.autofill=false end
+  db.schema=2
 end
+-- Which saved guild this is, and the key an earlier version may have used for it. On Forever that's the
+-- guild's name (guildmates report different realms); elsewhere "Guild - Realm", so two guilds with the same
+-- name on different realms stay apart.
 local function guildKey()
   if not (IsInGuild and IsInGuild()) or not GetGuildInfo then return nil end
-  local name=GetGuildInfo('player')
+  local name,_,_,realm=GetGuildInfo('player')
   if type(name)~='string' or isSecret(name) or name=='' then return nil end
-  return name
+  if type(realm)~='string' or isSecret(realm) or realm=='' then
+    realm=(GetNormalizedRealmName and GetNormalizedRealmName()) or (GetRealmName and GetRealmName())
+  end
+  local withRealm=(type(realm)=='string' and not isSecret(realm) and realm~='') and (name..' - '..realm) or name
+  if GV.forever then return name,withRealm end
+  return withRealm,name
 end
 -- banks: id -> snapshot; tagged: bank characters from the guild info text; extra: ones added with /gbt add;
 -- managed: ones the guild master set with /gbt bank add (managedBy, managedStamp say who and when);
 -- requests: id -> request; officerRank: highest rank index (0 = guild master) that counts as an officer.
 function GV.guild()
-  local name=db and guildKey()
+  if not db then return nil end
+  local name,plain=guildKey()
   if not name then return nil end
   local g=db.guilds[name]
+  -- Data saved under the other key by an earlier version moves over the first time.
+  if not g and plain~=name and db.guilds[plain] then g=db.guilds[plain]; db.guilds[plain]=nil; db.guilds[name]=g end
   if not g then g={banks={},tagged={},extra={}}; db.guilds[name]=g end
   g.requests=g.requests or {}
   g.managed=g.managed or {}
@@ -270,13 +344,13 @@ end
 function GV.scanSelf()
   -- Keep this character's last bank visit even before we know it's a bank character: the full name
   -- (with surname) only arrives a moment after login, and a quick visit then shouldn't be lost.
-  local unit=UnitName('player')
-  if isSecret(unit) then unit=nil end
-  if bankOpen and unit then db.ownBank[unit]={items=GV.scanContainers(GV.bankIds()),stamp=now()} end
+  local mine=charKey()
+  if bankOpen and mine then db.ownBank[mine]={items=GV.scanContainers(GV.bankIds()),stamp=now()} end
   local g,me=GV.guild(),myId()
-  if not g or not GV.isBank(me) then return end
+  -- Not sure yet which of the account's characters this is: don't speak for a bank toon.
+  if not g or not nameConfirmed or not GV.isBank(me) then return end
   local old=g.banks[me] or {}
-  local visit=unit and db.ownBank[unit]
+  local visit=mine and db.ownBank[mine]
   local snap={owner=key(),bags=GV.scanContainers(GV.bagIds()),bank=old.bank or {},bankStamp=old.bankStamp or 0,gold=(GetMoney and GetMoney()) or 0}
   if visit and visit.stamp>snap.bankStamp then snap.bank,snap.bankStamp=visit.items,visit.stamp end
   snap.hash=GV.hash(snap)
@@ -1662,7 +1736,7 @@ end
 function GV.senderId(sender)
   local id=nameId(sender)
   if not id or roster[id] then return id end
-  local first,found=baseName(sender):lower(),nil
+  local first,found=baseName(sender):lower():match('^(%S+)'),nil
   for rid,member in pairs(roster) do
     local name=baseName(member.name)
     if name and name:lower():match('^(%S+)')==first then
