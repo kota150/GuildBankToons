@@ -3715,27 +3715,54 @@ function GV.refresh()
 end
 
 -- Minimap button and the game's AddOns options ---------------------------------------------------------
+-- When another addon has loaded LibDBIcon (most minimap-button addons do), the button joins it, so it lines
+-- up with everyone else's and works with button-collector and minimap-skin addons. Otherwise it's our own
+-- button, drawn with LibDBIcon's ring and sizes and following the minimap's shape the way it does.
+local BROKER_NAME='Guild Bank Toons'
+local function dbIcon() return ui.broker and LibStub and LibStub('LibDBIcon-1.0',true) end
+function GV.minimapTooltip(tooltip)
+  tooltip:AddLine('Guild Bank Toons')
+  local open=GV.guild() and GV.activeRequestCount() or 0
+  if open>0 then tooltip:AddLine(open..' active request'..(open==1 and '' or 's'),1,1,1) end
+  if GV.guild() and #GV.bankList()>0 then tooltip:AddLine('Guild bank gold: '..GV.money(GV.currentGold('*')),1,1,1) end
+  tooltip:AddLine('Click to open. Drag to move.',.6,.6,.6)
+end
+-- A LibDataBroker launcher, only when another addon has loaded LibDataBroker (we don't ship it). Display
+-- addons such as Titan Panel show it too.
+function GV.setupBroker()
+  local LDB=LibStub and LibStub('LibDataBroker-1.1',true)
+  if ui.broker or not LDB then return end
+  ui.broker=LDB:NewDataObject(BROKER_NAME,{type='launcher',label='Guild Bank',icon='Interface\\Icons\\INV_Misc_Bag_10_Blue',
+    OnClick=function() GV.toggle() end,OnTooltipShow=function(tooltip) GV.minimapTooltip(tooltip) end})
+end
 function GV.buildMinimapButton()
   if ui.minimap or not Minimap then return end
+  local icon=dbIcon()
+  if icon then
+    -- LibDBIcon keeps its own keys (hide, minimapPos) in this table.
+    db.ui.minimapIcon=db.ui.minimapIcon or {minimapPos=db.ui.minimapAngle}
+    db.ui.minimapIcon.hide=not settings().minimap
+    icon:Register(BROKER_NAME,ui.broker,db.ui.minimapIcon)
+    ui.minimap=icon:GetMinimapButton(BROKER_NAME) or true
+    ui.minimapLib=true
+    return
+  end
   local b=CreateFrame('Button','GuildBankToonsMinimapButton',Minimap)
   b:SetSize(31,31); b:SetFrameStrata('MEDIUM'); b:SetFrameLevel(8)
   b:SetHighlightTexture('Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight')
-  local back=b:CreateTexture(nil,'BACKGROUND'); back:SetSize(20,20); back:SetPoint('TOPLEFT',7,-5)
-  back:SetTexture('Interface\\Minimap\\UI-Minimap-Background')
-  local icon=b:CreateTexture(nil,'ARTWORK'); icon:SetSize(17,17); icon:SetPoint('TOPLEFT',7,-6)
-  icon:SetTexture('Interface\\Icons\\INV_Misc_Bag_10_Blue')
-  local border=b:CreateTexture(nil,'OVERLAY'); border:SetSize(53,53); border:SetPoint('TOPLEFT')
+  local border=b:CreateTexture(nil,'OVERLAY'); border:SetSize(50,50); border:SetPoint('TOPLEFT')
   border:SetTexture('Interface\\Minimap\\MiniMap-TrackingBorder')
+  local back=b:CreateTexture(nil,'BACKGROUND'); back:SetSize(24,24); back:SetPoint('CENTER')
+  back:SetTexture('Interface\\Minimap\\UI-Minimap-Background')
+  local art=b:CreateTexture(nil,'ARTWORK'); art:SetSize(18,18); art:SetPoint('CENTER')
+  art:SetTexture('Interface\\Icons\\INV_Misc_Bag_10_Blue')
   b:RegisterForDrag('LeftButton')
   b:SetScript('OnDragStart',function(self) self:SetScript('OnUpdate',GV.dragMinimap) end)
   b:SetScript('OnDragStop',function(self) self:SetScript('OnUpdate',nil) end)
   b:SetScript('OnClick',function() GV.toggle() end)
   b:SetScript('OnEnter',function(self)
     GameTooltip:SetOwner(self,'ANCHOR_LEFT')
-    GameTooltip:AddLine('Guild Bank Toons')
-    local open=GV.guild() and GV.activeRequestCount() or 0
-    if open>0 then GameTooltip:AddLine(open..' active request'..(open==1 and '' or 's'),1,1,1) end
-    GameTooltip:AddLine('Click to open. Drag to move.',.6,.6,.6)
+    GV.minimapTooltip(GameTooltip)
     GameTooltip:Show()
   end)
   b:SetScript('OnLeave',function() GameTooltip:Hide() end)
@@ -3750,13 +3777,42 @@ function GV.dragMinimap()
   db.ui.minimapAngle=math.deg(atan2(y/scale-my,x/scale-mx))
   GV.placeMinimap()
 end
+-- Which quarters of the minimap are round, for each shape GetMinimapShape can report (LibDBIcon's table).
+local MINIMAP_SHAPES={
+  ROUND={true,true,true,true}, SQUARE={false,false,false,false},
+  ['CORNER-TOPLEFT']={false,false,false,true}, ['CORNER-TOPRIGHT']={false,false,true,false},
+  ['CORNER-BOTTOMLEFT']={false,true,false,false}, ['CORNER-BOTTOMRIGHT']={true,false,false,false},
+  ['SIDE-LEFT']={false,true,false,true}, ['SIDE-RIGHT']={true,false,true,false},
+  ['SIDE-TOP']={false,false,true,true}, ['SIDE-BOTTOM']={true,true,false,false},
+  ['TRICORNER-TOPLEFT']={false,true,true,true}, ['TRICORNER-TOPRIGHT']={true,false,true,true},
+  ['TRICORNER-BOTTOMLEFT']={true,true,false,true}, ['TRICORNER-BOTTOMRIGHT']={true,true,true,false},
+}
+-- Where the button sits for an angle: on the ring of a round quarter, on the edge of a square one.
+function GV.minimapOffset(angle)
+  local x,y=math.cos(math.rad(angle)),math.sin(math.rad(angle))
+  local q=1
+  if x<0 then q=q+1 end
+  if y>0 then q=q+2 end
+  local shape=GetMinimapShape and GetMinimapShape() or 'ROUND'
+  local quarters=MINIMAP_SHAPES[shape] or MINIMAP_SHAPES.ROUND
+  local w=((Minimap:GetWidth() or 140)/2)+5
+  local h=((Minimap:GetHeight() or 140)/2)+5
+  if quarters[q] then return x*w,y*h end
+  local diagW,diagH=math.sqrt(2*w*w)-10,math.sqrt(2*h*h)-10
+  return math.max(-w,math.min(x*diagW,w)),math.max(-h,math.min(y*diagH,h))
+end
 function GV.placeMinimap()
+  local shown=settings().minimap and true or false
+  if ui.minimapLib then
+    local icon=dbIcon()
+    db.ui.minimapIcon.hide=not shown
+    if shown then icon:Show(BROKER_NAME) else icon:Hide(BROKER_NAME) end
+    return
+  end
   local b=ui.minimap
   if not b then return end
-  local angle=math.rad(db.ui.minimapAngle or 205)
-  local radius=((Minimap:GetWidth() or 140)/2)+10
-  b:ClearAllPoints(); b:SetPoint('CENTER',Minimap,'CENTER',math.cos(angle)*radius,math.sin(angle)*radius)
-  b:SetShown(settings().minimap and true or false)
+  b:ClearAllPoints(); b:SetPoint('CENTER',Minimap,'CENTER',GV.minimapOffset(db.ui.minimapAngle or 205))
+  b:SetShown(shown)
 end
 -- A page under the game's Options > AddOns that opens the Settings tab.
 function GV.registerOptions()
@@ -3936,6 +3992,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if register then register(PREFIX) end
     GV.hookTooltips()
     GV.hookMail()
+    GV.setupBroker() -- before the minimap button, which can use its data object
     GV.buildMinimapButton()
     GV.hookItemBox()
     pcall(GV.registerOptions)

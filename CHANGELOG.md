@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- The minimap button lines up with other addons' buttons: it joins LibDBIcon when another addon has loaded it, and otherwise uses LibDBIcon's ring and sizes and follows square and corner-shaped minimaps (it used to float off the edge of a square minimap).
 - Alts with the same first name could be taken for each other for a moment at login, and an alt could briefly publish its bags as a bank toon's. Characters are now told apart by their character ID, and nothing is published for a bank toon until the character's full name is confirmed.
 - WoW Forever names written as "First-Surname" (and with another ruleset's realm added, like "-CAMWOWUS2Realm2PvE") were cut down to the first name, so two characters sharing a first name were treated as one. Names are now read as first name and surname in every form, the same way GuildForge does, and your own surname comes straight from the game at login. The Discord companion reads them the same way.
 - On Classic Era, guilds with the same name on different realms no longer share data. On Forever guilds stay keyed by name, since guildmates report different realms; saved data moves to the right key automatically.

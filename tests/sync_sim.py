@@ -20,6 +20,7 @@ function Obj:SetShown(v) rawset(self,'_shown',v and true or false) end
 function Obj:IsShown() return rawget(self,'_shown')==true end
 function Obj:GetHeight() return 300 end
 function Obj:GetWidth() return 600 end
+function Obj:SetPoint(...) rawset(self,'_point',{...}) end
 function Obj:SetText(v) rawset(self,'_text',v) end
 function Obj:GetText() return rawget(self,'_text') end
 function Obj:SetScript(name,fn) rawset(self,'_'..name,fn) end
@@ -42,6 +43,11 @@ GetSendMailItem=function(i)
   for _,a in ipairs(env.attached) do if a.slot==i then return 'item' end end
 end
 SetSendMailMoney=function(c) env.sendMoney=c end
+-- A 140x140 minimap; MINIMAP_SHAPE as GetMinimapShape reports it.
+Minimap=setmetatable({},Obj)
+function Minimap:GetWidth() return 140 end
+function Minimap:GetHeight() return 140 end
+GetMinimapShape=function() return MINIMAP_SHAPE or 'ROUND' end
 -- The guild bank: VAULT={money=, tabs={{name=, hidden=, items={{id,count},...}}, ...}}
 GetNumGuildBankTabs=function() return VAULT and #VAULT.tabs or 0 end
 GetGuildBankTabInfo=function(t) local tab=VAULT.tabs[t]; return tab.name,'icon',not tab.hidden end
@@ -575,6 +581,32 @@ bank.name='Vault Keeper'; bank.env.guid='Player-1-VaultKeeper'; bank.env.surname
 bank.setbags([[2589,20],[2589,20],[2589,6]])
 bank.login(); bus.run(20)
 check('back on the bank toon, it is itself again', bank.L.globals().GuildBankToonsDB.knownAs['Player-1-VaultKeeper']=='Vault Keeper' and m1.snap()['hash']==bank.snap()['hash'])
+
+# --- the minimap button, as in PiggyBank ---
+def place(c,angle,shape):
+    c.L.execute('MINIMAP_SHAPE=%s; GuildBankToonsDB.ui.minimapAngle=%d' % ('"'+shape+'"', angle))
+    GBT(c).placeMinimap()
+    return GBT(c).minimapOffset(angle)
+import math
+x,y=place(m1,205,'ROUND')
+check('on a round minimap the button sits on the ring', abs(math.hypot(x,y)-75)<0.01)
+x,y=place(m1,225,'SQUARE')
+check('on a square minimap the button sits in the corner, inside the edge', abs(x)<=75 and abs(y)<=75 and math.hypot(x,y)>80)
+x,y=place(m1,225,'CORNER-BOTTOMLEFT')
+check('a round corner of a corner-shaped minimap stays on the ring', abs(math.hypot(x,y)-75)<0.01)
+m1.L.execute("MINIMAP_SHAPE=nil")
+evil.logout(); bus.run(1)
+evil.L.execute('''LIBS={}
+LIBS['LibDataBroker-1.1']={NewDataObject=function(self,name,obj) LIBS.obj=obj; return obj end}
+LIBS['LibDBIcon-1.0']={Register=function(self,name,obj,db) LIBS.registered=name; LIBS.db=db end,
+  GetMinimapButton=function() return nil end, Show=function() LIBS.shown=true end, Hide=function() LIBS.shown=false end}
+LibStub=function(name) return LIBS[name] end''')
+evil.login(); bus.run(3)
+libs=evil.L.globals().LIBS
+check('with LibDBIcon loaded by another addon, the button joins it', libs.registered=='Guild Bank Toons' and libs.obj.type=='launcher' and libs.db is not None)
+evil.L.globals().GuildBankToonsDB.settings.minimap=False; GBT(evil).placeMinimap()
+check('hiding the button in Settings hides it in LibDBIcon too', libs.shown==False and libs.db.hide==True)
+evil.L.globals().GuildBankToonsDB.settings.minimap=True; GBT(evil).placeMinimap()
 
 # --- trial accounts (Forever blocks their addon messages) ---
 before=bus.count; known=len(requests_of(officer))
