@@ -76,8 +76,17 @@ end
 -- Forever writes the surname after a space or a dash ("First Surname", "First-Surname"), and the game may
 -- add a realm: ours, or another one, which always has digits ("First-Surname-CAMWOWUS2Realm2PvE");
 -- names never do. On Classic Era the part after the first dash is the realm.
+-- Forever's guild bank is shared as one "bank" per tab, named *vault<tab>:<tab name>.
+local function vaultTab(name)
+  return type(name)=='string' and not isSecret(name) and name:match('^%*vault(%d+)') or nil
+end
 local function baseName(name)
   if type(name)~='string' or isSecret(name) then return nil end
+  local tab=vaultTab(name)
+  if tab then
+    local label=name:match('^%*vault%d+:(.+)$')
+    return 'Guild Bank - '..(label or ('Tab '..tab))
+  end
   local own=myRealm()
   if own then
     local start=1
@@ -103,6 +112,8 @@ local function baseName(name)
   return character
 end
 local function nameId(name)
+  local tab=vaultTab(name)
+  if tab then return '*vault'..tab end
   local character=baseName(name)
   return character and (character:gsub('%s',''):lower())
 end
@@ -241,8 +252,10 @@ function GV.guild()
   g.donations=g.donations or {}
   return g
 end
+function GV.isVault(id) return type(id)=='string' and id:match('^%*vault%d+$')~=nil end
 function GV.isBank(id)
   local g=GV.guild()
+  if g and GV.isVault(id) then return true end
   return (g and id and (g.managed[id] or g.tagged[id] or g.extra[id])) and true or false
 end
 function GV.bankList()
@@ -257,7 +270,16 @@ function GV.bankList()
       end
     end
   end
-  table.sort(list,function(a,b) return a.name<b.name end)
+  -- Public guild bank tabs that someone has shared, after the bank toons.
+  for id,snap in pairs(g.banks) do
+    local tab=GV.isVault(id) and tonumber(id:match('%d+'))
+    if tab and not seen[id] and GV.isPublicTab(tab) then seen[id]=true; list[#list+1]={id=id,name=snap.owner,tab=tab} end
+  end
+  table.sort(list,function(a,b)
+    if (a.tab~=nil)~=(b.tab~=nil) then return b.tab~=nil end
+    if a.tab then return a.tab<b.tab end
+    return a.name<b.name
+  end)
   return list
 end
 function GV.readTags()
@@ -433,7 +455,7 @@ function GV.sendRequest(id)
   local g=GV.guild()
   if not g then return end
   local snap=g.banks[id]
-  local origin=(snap and snap.owner) or g.managed[id] or g.tagged[id] or g.extra[id]
+  local origin=(snap and snap.owner) or g.managed[id] or g.tagged[id] or g.extra[id] or (GV.isVault(id) and id)
   if not origin then return end
   GV.queue('R|'..origin..'|'..(snap and snap.stamp or 0)..'|'..(snap and snap.hash or 0),true)
   -- A bank toon's own copy is the real one, so it only announces it; everyone else collects offers.
@@ -444,6 +466,7 @@ function GV.sendSnapshot(id,asked)
   local g=GV.guild()
   local snap=g and g.banks[id]
   if not snap or not snap.stamp then return end
+  if GV.isVault(id) and not GV.isPublicTab(tonumber(id:match('%d+'))) then return end
   -- Guild messages reach everyone, so one broadcast answers every request that arrives meanwhile.
   if not asked and lastSent[id]==snap.stamp and GetTime()-(lastSentAt[id] or 0)<30 then return end
   lastSent[id],lastSentAt[id]=snap.stamp,GetTime()
@@ -493,6 +516,7 @@ function GV.syncAll()
   local me=myId()
   if GV.isBank(me) then GV.scanSelf() end
   for _,bank in ipairs(GV.bankList()) do GV.sendRequest(bank.id) end
+  GV.askVault()
 end
 -- A different copy of our own bank is going around (stale, or forged): re-stamp ours above it.
 function GV.outbid(id,stamp)
@@ -515,7 +539,7 @@ local function plausible(stamp) return stamp<=now()+MAX_FUTURE end
 local OFFER_WAIT,ANSWER_WAIT,ENOUGH_OFFERS=5,2,3
 local offersHeard={} -- topic id -> offers heard at least as new as ours since we planned to offer
 local collecting={} -- topic id -> {topic=, offers={}, since=, asked=, at=}
-local function topicId(topic) return topic:sub(1,1)=='*' and topic or nameId(topic) end
+local function topicId(topic) return topic:sub(1,1)=='*' and topic:match('^(%*%w+)') or nameId(topic) end
 -- The stamp (and hash) of what we hold on a topic.
 function GV.held(id)
   local g=GV.guild()
@@ -523,6 +547,7 @@ function GV.held(id)
   if id=='*list' then return GV.newestStamp(),0 end
   if id=='*gm' then return g.managedStamp or 0,0 end
   if id=='*plan' then return GV.plan().stamp or 0,0 end
+  if id=='*view' then return GV.viewStamp(),0 end
   local snap=g.banks[id]
   return snap and snap.stamp or 0,snap and snap.hash or 0
 end
@@ -603,6 +628,7 @@ function GV.onOfferMessage(action,topic,rest,sender)
       GV.once('reqlist',0.1,function() local since=GV.listSince; GV.listSince=nil; GV.sendRequestList(since) end)
     elseif id=='*gm' then GV.once('list:send',0.1,function() GV.sendManaged(true) end)
     elseif id=='*plan' then GV.once('plan:send',0.1,function() GV.sendPlan(true) end)
+    elseif id=='*view' then GV.once('view:send',0.1,function() GV.sendViews(true) end)
     else GV.once('send:'..id,0.1,function() GV.sendSnapshot(id,true) end) end
   end
 end
@@ -617,8 +643,10 @@ function GV.onMessage(msg,sender)
   if action=='S' or action=='M' then GV.onListMessage(action,origin,rest,sender); return end
   if action=='O' or action=='G' then GV.onOfferMessage(action,origin,rest,sender); return end
   if action=='C' or action=='K' then GV.onPlanMessage(action,origin,rest,sender); return end
+  if action=='X' or action=='W' then GV.onViewMessage(action,origin,rest,sender); return end
   local g,id=GV.guild(),nameId(origin)
   if not g or not id or not GV.isBank(id) then return end
+  if GV.isVault(id) and not GV.isPublicTab(tonumber(id:match('%d+'))) then return end
   local senderId=(not isSecret(sender) and nameId(sender)) or '?'
   if senderId==myId() then return end
   local mine=g.banks[id]
@@ -706,7 +734,9 @@ end
 -- approves or denies it. Approved items are reserved (they come off the available counts) until the bank
 -- character mails them, which closes the request. Every client keeps the guild's requests, so people see
 -- ones made while they were offline, and the Discord companion can post them.
---   Q|requester|id|updated|status|bank|itemID|count|actor|approvedBy|note   one request (new or changed)
+--   Q|requester|id|updated|status|bank|items|count|actor|approvedBy|to|note   one request (new or changed)
+--     items: an item ID, 0 for gold (count in whole gold), or itemID:count,... for several items in one mail
+--     to: who the bank mails it to, when not the requester (a crafter, for a craft order)
 --   L|me              just logged in: one guildmate replies with every request it holds
 --   P|me|count        "my next count Q messages are my whole list" (other would-be repliers stand down)
 --   A|officer|id      an approver's client saw a new request; the requester whispers only officers who don't ack
@@ -749,12 +779,32 @@ function GV.allowed(r,from,to,actor)
   if not actor or not STAGE[to] or (from and STAGE[to]<=STAGE[from]) then return false end
   if to=='open' then return from==nil and actor==nameId(r.by) end
   if to=='approved' or to=='denied' then return GV.isApprover(actor) end
-  if to=='mailed' then return (from==nil or from=='approved') and actor==nameId(r.bank) end
+  if to=='mailed' then return (from==nil or from=='approved') and GV.canMail(r,actor) end
   if to=='cancelled' then return (from==nil or from=='open') and actor==nameId(r.by) end
   return false
 end
+-- A request's items as itemID -> count (empty for gold).
+function GV.requestItems(r)
+  if r.items then return r.items end
+  if r.item and r.item>0 then return {[r.item]=r.count} end
+  return {}
+end
+local MAX_BUNDLE=8
+local function encodeItems(items)
+  local list={}
+  for id,count in pairs(items) do list[#list+1]=id..':'..count end
+  table.sort(list)
+  return table.concat(list,',')
+end
+-- The bank toon mails its own requests; guild bank requests are withdrawn and mailed by an officer.
+function GV.canMail(r,actor)
+  local bank=nameId(r.bank)
+  if GV.isVault(bank) then return GV.isOfficer(actor) end
+  return actor==bank
+end
 function GV.requestPayload(r)
-  local payload=table.concat({'Q',r.by,r.id,r.updated,r.status,r.bank,r.item,r.count,r.actor or '',r.approvedBy or '',r.note or ''},'|')
+  local items=r.items and encodeItems(r.items) or r.item
+  local payload=table.concat({'Q',r.by,r.id,r.updated,r.status,r.bank,items,r.count,r.actor or '',r.approvedBy or '',r.to or '',r.note or ''},'|')
   return payload:sub(1,254)
 end
 -- Mailed requests are the guild's withdrawals log, so they're kept as long as donations.
@@ -789,7 +839,10 @@ function GV.reserved(bankId)
   local g,out=GV.guild(),{}
   if not g then return out end
   for _,r in pairs(g.requests) do
-    if r.status=='approved' and nameId(r.bank)==bankId then out[r.item]=(out[r.item] or 0)+r.count end
+    if r.status=='approved' and nameId(r.bank)==bankId then
+      if r.item==0 then out[0]=(out[0] or 0)+r.count end
+      for id,count in pairs(GV.requestItems(r)) do out[id]=(out[id] or 0)+count end
+    end
   end
   return out
 end
@@ -804,11 +857,20 @@ end
 -- Requests for gold use item 0, with the count in whole gold.
 function GV.requestLabel(r,plain)
   if r.item==0 then return r.count..'g' end
-  local name,link=GV.itemInfo(r.item)
-  return r.count..'x '..((not plain and link) or name or ('item #'..r.item))
+  local ids,parts={},{}
+  local items=GV.requestItems(r)
+  for id in pairs(items) do ids[#ids+1]=id end
+  table.sort(ids,function(a,b) if items[a]~=items[b] then return items[a]>items[b] end return a<b end)
+  for i,id in ipairs(ids) do
+    if i>3 then parts[#parts+1]=(#ids-3)..' more'; break end
+    local name,link=GV.itemInfo(id)
+    parts[#parts+1]=items[id]..'x '..((not plain and link) or name or ('item #'..id))
+  end
+  return table.concat(parts,', ')
 end
 function GV.describe(r,plain)
-  return GV.requestLabel(r,plain)..' from '..displayName(r.bank)..((r.note or '')~='' and (' - '..r.note) or '')
+  return GV.requestLabel(r,plain)..' from '..displayName(r.bank)..(r.to and (' to '..displayName(r.to)..' (craft order)') or '')
+    ..((r.note or '')~='' and (' - '..r.note) or '')
 end
 function GV.requestCreated(r) return tonumber(r.id:match('%-(%d+)%-%d+$')) or r.updated end
 -- Items one member asked for in the last day, not counting denied or cancelled requests or gold.
@@ -829,7 +891,7 @@ function GV.autoApprove(r)
   if not member or type(member.rank)~='number' or isSecret(member.rank) or member.rank>GV.rule('autoRank') then return end
   local limit=GV.rule('limit')
   if limit>0 and GV.requestedToday(nameId(r.by))>limit then return end
-  if GV.available(nameId(r.bank),r.item)<r.count then return end
+  for id,count in pairs(GV.requestItems(r)) do if GV.available(nameId(r.bank),id)<count then return end end
   GV.once('auto:'..r.id,(nameId(r.bank)==myId()) and 1 or (2+math.random()*3),function()
     local cur=GV.guild().requests[r.id]
     if cur and cur.status=='open' and GV.setRequestStatus(cur,'approved') then
@@ -860,7 +922,13 @@ function GV.notify(r,isNew,relayed)
     end
   elseif r.status=='approved' then
     if requester==me then GV.alert('Your request for '..GV.describe(r)..' was |cff40ff40approved|r by '..who..'. '..displayName(r.bank)..' will mail it.') end
-    if bank==me then GV.alert('Approved by '..who..': mail '..GV.describe(r)..' to |cffffd100'..displayName(r.by)..'|r. Open a mailbox to use the mail helper.') end
+    if bank==me then GV.alert('Approved by '..who..': mail '..GV.describe(r)..' to |cffffd100'..displayName(r.to or r.by)..'|r. Open a mailbox to use the mail helper.') end
+    if r.to and nameId(r.to)==me and requester~=me then
+      GV.alert(displayName(r.bank)..' will mail you the materials for '..displayName(r.by)..'\'s craft order: '..GV.requestLabel(r)..'.')
+    end
+  elseif r.status=='mailed' and r.to and nameId(r.to)==me and requester~=me then
+    GV.alert('Materials for '..displayName(r.by)..'\'s craft order are in your mail from '..displayName(r.bank)..': '..GV.requestLabel(r)
+      ..'. Craft it and mail it to |cffffd100'..displayName(r.by)..'|r.'..((r.note or '')~='' and (' ('..r.note..')') or ''))
   elseif requester==me and r.status~='cancelled' then
     GV.alert('Your request for '..GV.describe(r)..' was |cffffd100'..STATUSES[r.status]:lower()..'|r by '..who..'.')
   end
@@ -880,27 +948,45 @@ function GV.acceptRequest(r,relayed)
   local trusted=(r.status=='approved' or r.status=='denied') and next(roster)==nil and actor~=nil
   if not trusted and not GV.allowed(r,from,r.status,actor) then rejected=rejected+1; return false end
   g.requests[r.id]=r
-  if r.item>0 and not GV.itemInfo(r.item) then loadingItems[r.item]=true end
+  for id in pairs(GV.requestItems(r)) do if not GV.itemInfo(id) then loadingItems[id]=true end end
   requestUpdate()
   GV.notify(r,mine==nil,relayed)
   if mine==nil and r.status=='open' then GV.autoApprove(r) end
   return true
 end
-function GV.createRequest(item,count,note,bank)
+-- item: an item ID, 0 for gold, or itemID -> count for several items in one mail (count is then ignored).
+-- opts.to: mail it to someone else (a crafter, for a craft order). Returns the request, or nil and why.
+function GV.createRequest(item,count,note,bank,opts)
   local g=GV.guild()
-  if not g then return end
-  if GV.isTrial() then log('Trial accounts can\'t send requests in WoW Forever; ask a guildmate to request it for you.',true); return end
-  if item==0 and GV.rule('gold')==0 then log('The guild isn\'t taking gold requests right now.',true); return end
+  if not g then return nil,'Not in a guild.' end
+  local items
+  if type(item)=='table' then
+    items,count={},0
+    local distinct=0
+    for id,n in pairs(item) do
+      n=math.floor(tonumber(n) or 0)
+      if tonumber(id) and n>0 then items[tonumber(id)]=math.min(9999,n); count=count+items[tonumber(id)]; distinct=distinct+1 end
+    end
+    if distinct==0 then return nil,'Nothing to request.' end
+    if distinct>MAX_BUNDLE then log('One request can hold up to '..MAX_BUNDLE..' different items.',true); return nil,'Too many different items.' end
+    item=nil
+    for id in pairs(items) do if not item or items[id]>items[item] then item=id end end
+    if distinct==1 then count=items[item]; items=nil end
+  end
+  if GV.isTrial() then log('Trial accounts can\'t send requests in WoW Forever; ask a guildmate to request it for you.',true); return nil,'Trial account.' end
+  if item==0 and GV.rule('gold')==0 then log('The guild isn\'t taking gold requests right now.',true); return nil,'Gold requests are off.' end
   local limit=GV.rule('limit')
   if limit>0 and item~=0 then
     local used=GV.requestedToday(myId())
     if used+count>limit then
       log('The guild\'s limit is '..limit..' items a day per member, and you\'ve asked for '..used..' in the last 24 hours.',true)
-      return
+      return nil,'Over the daily limit.'
     end
   end
+  local to=opts and opts.to and baseName(opts.to)
+  if to and nameId(to)==myId() then to=nil end
   local r={id=myId()..'-'..now()..'-'..math.random(100,999),by=key(),updated=now(),status='open',
-    bank=bank,item=item,count=math.max(1,math.min(9999,count)),note=clean(note,80)}
+    bank=bank,item=item,count=math.max(1,math.min(items and 99999 or 9999,count)),items=items,to=to,note=clean(note,60)}
   g.requests[r.id]=r
   acks[r.id]={}
   GV.queue(GV.requestPayload(r))
@@ -910,6 +996,7 @@ function GV.createRequest(item,count,note,bank)
   if C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() elseif GuildRoster then GuildRoster() end
   GV.schedule('whisper:'..r.id,6,function() GV.whisperOfficers(r) end)
   GV.promptReload()
+  return r
 end
 function GV.whisperOfficers(r)
   GV.readRoster()
@@ -1014,10 +1101,14 @@ function GV.onRequestMessage(action,origin,rest,sender)
   elseif action=='A' then
     if acks[rest] and senderMatches(sender,origin) then acks[rest][nameId(origin)]=true end
   elseif action=='Q' then
-    local id,updated,status,bank,item,count,actor,approvedBy,note=rest:match('^([^|]+)|(%d+)|(%a+)|([^|]+)|(%d+)|(%d+)|([^|]*)|([^|]*)|?(.*)$')
+    local id,updated,status,bank,item,count,actor,approvedBy,to,note=rest:match('^([^|]+)|(%d+)|(%a+)|([^|]+)|([%d:,]+)|(%d+)|([^|]*)|([^|]*)|([^|]*)|?(.*)$')
     if not id then return end
     local r={id=id,by=origin,updated=tonumber(updated),status=status,bank=bank,item=tonumber(item),count=tonumber(count),
-      actor=actor~='' and actor or nil,approvedBy=approvedBy~='' and approvedBy or nil,note=note}
+      actor=actor~='' and actor or nil,approvedBy=approvedBy~='' and approvedBy or nil,to=to~='' and to or nil,note=note}
+    if item:find(':',1,true) then
+      r.items,r.item={},nil
+      for itemId,n in item:gmatch('(%d+):(%d+)') do r.items[tonumber(itemId)]=tonumber(n); r.item=r.item or tonumber(itemId) end
+    end
     local fromList=listening and listening.from==senderId
     -- Anyone may pass a request on; only the requester's own message counts as brand new (and alerts).
     GV.acceptRequest(r,not senderMatches(sender,origin))
@@ -1426,6 +1517,258 @@ function GV.goldSeries(days,toon)
   return out
 end
 
+-- Forever's guild bank -----------------------------------------------------------------------------------
+-- Whoever opens the guild bank reads every tab they can see and shares it like a bank toon's contents: one
+-- entry per tab ("Guild Bank - Mats"), with the guild bank's gold on the first. Tabs their rank can't see
+-- keep what someone who could see them last shared. Requests for it are taken out and mailed by an officer.
+local vaultOpen=false
+function GV.vaultOpened()
+  vaultOpen=true
+  if not GetNumGuildBankTabs then return end
+  -- The server sends a tab's contents only when it's asked for; ask for each in turn.
+  for tab=1,(GetNumGuildBankTabs() or 0) do
+    if QueryGuildBankTab then later(0.3*(tab-1),function() if vaultOpen then pcall(QueryGuildBankTab,tab) end end) end
+  end
+  GV.schedule('vault',3,GV.scanVault)
+end
+function GV.vaultClosed()
+  if not vaultOpen then return end
+  GV.scanVault()
+  vaultOpen=false
+end
+function GV.scanVault()
+  local g=GV.guild()
+  if not g or not vaultOpen or not (GetNumGuildBankTabs and GetGuildBankTabInfo and GetGuildBankItemLink and GetGuildBankItemInfo) then return end
+  local money=(GetGuildBankMoney and GetGuildBankMoney()) or 0
+  if isSecret(money) then money=0 end
+  -- First what our rank can see (which tells the guild what's public when we're the lowest rank), then only
+  -- the public tabs are kept and shared. A tab some rank can't see never leaves this client.
+  local view,tabs={},GetNumGuildBankTabs() or 0
+  for tab=1,tabs do
+    local _,_,viewable=GetGuildBankTabInfo(tab)
+    if type(viewable)=='boolean' and not isSecret(viewable) then view[tab]=viewable end
+  end
+  GV.reportView(view)
+  -- The guild bank's gold goes with the first public tab.
+  local goldTab
+  for tab=1,tabs do if not goldTab and view[tab] and GV.isPublicTab(tab) then goldTab=tab end end
+  for tab=1,tabs do
+    local name,_,viewable=GetGuildBankTabInfo(tab)
+    if viewable and not isSecret(viewable) and GV.isPublicTab(tab) then
+      local items={}
+      for slot=1,(MAX_GUILDBANK_SLOTS_PER_TAB or 98) do
+        local link=GetGuildBankItemLink(tab,slot)
+        local id=type(link)=='string' and not isSecret(link) and tonumber(link:match('item:(%d+)'))
+        if id then
+          local _,count=GetGuildBankItemInfo(tab,slot)
+          items[id]=(items[id] or 0)+((type(count)=='number' and not isSecret(count)) and count or 1)
+        end
+      end
+      local key='*vault'..tab
+      local label=(type(name)=='string' and not isSecret(name) and name~='') and clean(name,30):gsub('[:,]',' ') or ('Tab '..tab)
+      local old=g.banks[key] or {}
+      local snap={owner=key..':'..label,bags={},bank=items,bankStamp=now(),gold=(tab==goldTab) and money or 0}
+      snap.hash=GV.hash(snap)
+      if snap.hash~=old.hash or snap.owner~=old.owner then
+        snap.stamp=math.max(now(),(old.stamp or 0)+1)
+        snap.received=snap.stamp
+        g.banks[key]=snap
+        GV.prime(snap)
+        if tab==goldTab then GV.recordGold(key,snap.stamp,snap.gold) end
+        -- Moving things around fires many updates; send each tab once it settles.
+        GV.schedule('vaultsend:'..tab,2,function() GV.sendSnapshot(key) end)
+      end
+    end
+  end
+  GV.pruneVault()
+  requestUpdate()
+end
+
+-- Public guild bank tabs ---------------------------------------------------------------------------------
+-- Only tabs every member can see are shared, so nothing from a restricted tab leaves the game of whoever
+-- opened it. The game only tells a client which tabs its own rank can see, so each client that opens the
+-- guild bank reports that for its rank (the reports spread like the plan does), and a tab is public when the
+-- guild's lowest rank reported seeing it. Until a member of the lowest rank has opened the guild bank once,
+-- no tabs are shared.
+--   X|me|stamp                     "this is the newest report I hold"; anyone with a newer one offers it
+--   W|reporter|rank|stamp|1:1,2:0  one rank's view: tab:1 visible, tab:0 not (reporter is of that rank)
+local function encodeView(tabs)
+  local parts={}
+  for tab,visible in pairs(tabs) do parts[#parts+1]=tab..':'..(visible and 1 or 0) end
+  table.sort(parts)
+  return table.concat(parts,',')
+end
+function GV.myRank()
+  local member=roster[myId()]
+  local rank=member and member.rank
+  if type(rank)~='number' or isSecret(rank) then return nil end
+  return rank
+end
+-- The guild's lowest rank: the highest rank index anyone in the guild holds.
+function GV.lowestRank()
+  local lowest
+  for _,member in pairs(roster) do
+    if type(member.rank)=='number' and not isSecret(member.rank) and (not lowest or member.rank>lowest) then lowest=member.rank end
+  end
+  return lowest
+end
+function GV.isPublicTab(tab)
+  local lowest,g=GV.lowestRank(),GV.guild()
+  local report=lowest and g and g.vaultView and g.vaultView[lowest]
+  return (report and report.tabs[tab]==true) and true or false
+end
+-- Forget any tab that isn't public (saved by an earlier version, or since restricted).
+function GV.pruneVault()
+  local g=GV.guild()
+  if not g or GV.lowestRank()==nil then return end
+  for id in pairs(g.banks) do
+    local tab=GV.isVault(id) and tonumber(id:match('%d+'))
+    if tab and not GV.isPublicTab(tab) then g.banks[id]=nil end
+  end
+end
+-- Public tabs we don't have yet: ask for them like a bank toon's contents.
+function GV.askVault()
+  local g,lowest=GV.guild(),GV.lowestRank()
+  local report=g and lowest and g.vaultView and g.vaultView[lowest]
+  if not report then return end
+  for tab,visible in pairs(report.tabs) do
+    if visible and not g.banks['*vault'..tab] then GV.sendRequest('*vault'..tab) end
+  end
+end
+function GV.viewStamp()
+  local newest=0
+  for _,entry in pairs(GV.guild() and GV.guild().vaultView or {}) do newest=math.max(newest,entry.stamp or 0) end
+  return newest
+end
+function GV.reportView(tabs)
+  GV.readRoster()
+  local g,rank=GV.guild(),GV.myRank()
+  if not g or rank==nil or not next(tabs) then return end
+  g.vaultView=g.vaultView or {}
+  local text,old=encodeView(tabs),g.vaultView[rank]
+  -- Same as last time and recent enough: no need to tell everyone again.
+  if old and encodeView(old.tabs)==text and now()-(old.stamp or 0)<86400 then return end
+  local entry={tabs=tabs,stamp=math.max(now(),old and (old.stamp+1) or 0),by=key()}
+  g.vaultView[rank]=entry
+  GV.queue('W|'..key()..'|'..rank..'|'..entry.stamp..'|'..text)
+  requestUpdate()
+end
+function GV.sendViews(asked)
+  for rank,entry in pairs(GV.guild() and GV.guild().vaultView or {}) do
+    GV.queue('W|'..(entry.by or key())..'|'..rank..'|'..entry.stamp..'|'..encodeView(entry.tabs),asked)
+  end
+end
+function GV.askViews()
+  if not GV.guild() then return end
+  GV.queue('X|'..key()..'|'..GV.viewStamp(),true)
+  GV.collect('*view')
+end
+function GV.acceptView(by,rank,stamp,text)
+  local g=GV.guild()
+  if not g or not plausible(stamp) then return end
+  g.vaultView=g.vaultView or {}
+  local cur=g.vaultView[rank]
+  if cur and cur.stamp>=stamp then return end
+  -- A report only counts for the reporter's own rank.
+  local member=roster[nameId(by)]
+  if next(roster) and (not member or member.rank~=rank) then rejected=rejected+1; return end
+  local tabs={}
+  for tab,visible in text:gmatch('(%d+):([01])') do tabs[tonumber(tab)]=visible=='1' end
+  g.vaultView[rank]={tabs=tabs,stamp=stamp,by=displayName(by)}
+  if rank==GV.lowestRank() then
+    GV.pruneVault()
+    GV.once('vault:ask',2,GV.askVault)
+  end
+  requestUpdate()
+end
+function GV.onViewMessage(action,origin,rest,sender)
+  local senderId=(not isSecret(sender) and nameId(sender)) or '?'
+  if senderId==myId() or not GV.guild() then return end
+  if action=='X' then
+    local stamp,mine=tonumber(rest),GV.viewStamp()
+    if not stamp then return end
+    if stamp<mine then GV.maybeOffer('*view',stamp)
+    elseif stamp>mine and plausible(stamp) then GV.once('view:ask',1+math.random()*3,GV.askViews) end
+    return
+  end
+  local rank,stamp,text=rest:match('^(%d+)|(%d+)|([%d:,]*)$')
+  if not rank then return end
+  GV.cancel('offer:*view')
+  GV.answered('*view',senderId,tonumber(stamp))
+  GV.acceptView(origin,tonumber(rank),tonumber(stamp),text)
+end
+
+-- For other addons ------------------------------------------------------------------------------------
+-- GuildForge (or any addon) can show what the guild bank holds and make requests through this table. It only
+-- grows: functions keep their meaning, and `version` goes up when one is added. Check it exists before use.
+--   API.version                       1
+--   API.HasBank()                     true in a guild with at least one bank toon or guild bank tab
+--   API.Available(itemID)             total available (after approved requests), and {[bank name]=count}
+--   API.Request(items,note,mailTo)    items: {[itemID]=count}. Asks whichever bank toons have them (one request
+--                                     per toon, one approval and one mail each); mailTo has the materials mailed
+--                                     to a crafter instead. Returns: request ids, {[itemID]=count} the bank
+--                                     couldn't cover, and why nothing was made (or nil)
+--   API.Open(tab)                     opens the window: 'items', 'requests', 'donations', 'goals', 'settings', 'gm'
+--   API.RegisterCallback(fn)          fn() runs (briefly after) whenever the bank, requests or plan change
+GuildBankToonsAPI={version=1}
+local API=GuildBankToonsAPI
+local callbacks={}
+function API.HasBank() return GV.guild()~=nil and #GV.bankList()>0 end
+function API.Available(item)
+  item=tonumber(item)
+  local total,per=0,{}
+  if not item or item<=0 or not GV.guild() then return 0,per end
+  for _,bank in ipairs(GV.bankList()) do
+    local n=GV.available(bank.id,item)
+    if n>0 then per[displayName(bank.name)]=n; total=total+n end
+  end
+  return total,per
+end
+function API.Request(items,note,mailTo)
+  local g=GV.guild()
+  if not g or type(items)~='table' then return {},items or {},'Not in a guild with a guild bank.' end
+  -- Each item comes from the bank toon with the most of it; then one request per bank toon.
+  local byBank,missing,order={},{},{}
+  for key,amount in pairs(items) do
+    local id,want=tonumber(key),math.floor(tonumber(amount) or 0)
+    if id and id>0 and want>0 then
+      local best,most
+      for _,bank in ipairs(GV.bankList()) do
+        local n=GV.available(bank.id,id)
+        if n>0 and (not most or n>most) then best,most=bank,n end
+      end
+      if best then
+        local take=math.min(want,most)
+        if not byBank[best.id] then
+          byBank[best.id]={name=(g.banks[best.id] and g.banks[best.id].owner) or best.name,items={},n=0}
+          order[#order+1]=best.id
+        end
+        local b=byBank[best.id]
+        -- One request holds up to MAX_BUNDLE different items; more go in another request to the same toon.
+        if b.n>=MAX_BUNDLE then b.more=b.more or {}; b.more[id]=take else b.items[id]=take; b.n=b.n+1 end
+        if take<want then missing[id]=want-take end
+      else
+        missing[id]=want
+      end
+    end
+  end
+  local made,why={},nil
+  for _,bankId in ipairs(order) do
+    local b=byBank[bankId]
+    for _,set in ipairs({b.items,b.more}) do
+      if set and next(set) then
+        local r,err=GV.createRequest(set,0,note,b.name,{to=mailTo})
+        if r then made[#made+1]=r.id else why=err end
+      end
+    end
+  end
+  if #made==0 and not why then why='The guild bank has none of these right now.' end
+  return made,missing,(#made==0) and why or nil
+end
+function API.Open(tab) GV.open(tab) end
+function API.RegisterCallback(fn) if type(fn)=='function' then callbacks[#callbacks+1]=fn end end
+function GV.fireCallbacks() for _,fn in ipairs(callbacks) do pcall(fn) end end
+
 -- Mail helper --------------------------------------------------------------------------------------
 -- On a bank character at a mailbox: a panel beside the mail window lists approved requests to mail.
 -- Fill opens Send Mail, addresses it and attaches the items from your bags (splitting a stack when the
@@ -1437,7 +1780,7 @@ local mailFilled -- {id=, name=}: the request the Send Mail form was filled for
 local lastMailTo -- recipient of the last SendMail call
 function GV.toMail()
   local me,list=myId(),{}
-  for _,r in ipairs(GV.requestList()) do if r.status=='approved' and nameId(r.bank)==me then list[#list+1]=r end end
+  for _,r in ipairs(GV.requestList()) do if r.status=='approved' and GV.canMail(r,me) then list[#list+1]=r end end
   return list
 end
 local function mailBodyBox()
@@ -1488,15 +1831,18 @@ function GV.attachItems(item,count)
 end
 function GV.fillMail(r)
   if not (MailFrame and MailFrame:IsShown()) then log('Open a mailbox first.',true); return end
-  if r.status~='approved' or nameId(r.bank)~=myId() then log('Only approved requests for this bank character can be mailed here.',true); return end
+  if r.status~='approved' or not GV.canMail(r,myId()) then log('Only approved requests for this bank character (or, for officers, the guild bank) can be mailed here.',true); return end
   if MailFrameTab_OnClick then pcall(MailFrameTab_OnClick,nil,2) elseif MailFrameTab2 then MailFrameTab2:Click() end
-  local name=displayName(r.by)
+  local name=displayName(r.to or r.by)
   if SendMailNameEditBox then SendMailNameEditBox:SetText(name) end
   if SendMailSubjectEditBox then
     SendMailSubjectEditBox:SetText(('Guild bank: '..GV.requestLabel(r,true)):sub(1,64))
   end
   local body=mailBodyBox()
-  if body then body:SetText('Approved by '..displayName(r.approvedBy or r.actor or '?')..'.'..((r.note or '')~='' and (' Your note: '..r.note) or '')) end
+  if body then
+    local order=r.to and ('Materials for '..displayName(r.by)..'\'s craft order: please craft it and mail it to '..displayName(r.by)..'. ') or ''
+    body:SetText(order..'Approved by '..displayName(r.approvedBy or r.actor or '?')..'.'..((r.note or '')~='' and (' Note: '..r.note) or ''))
+  end
   local ok,err
   if r.item==0 then
     local copper=r.count*10000
@@ -1507,7 +1853,11 @@ function GV.fillMail(r)
       ok=true
     end
   else
-    ok,err=GV.attachItems(r.item,r.count)
+    ok=true
+    for id,count in pairs(GV.requestItems(r)) do
+      ok,err=GV.attachItems(id,count)
+      if not ok then break end
+    end
   end
   mailFilled={id=r.id,name=name}
   if ok then log('Mail to '..name..' is ready. Check it, then press Send.',true) else log(err,true) end
@@ -1573,14 +1923,16 @@ function GV.refreshMailHelper()
       row.request=r
       local name=GV.requestLabel(r,true):gsub('^%d+x ','')
       local marker=(mailFilled and mailFilled.id==r.id) and '|cff40ff40> |r' or ''
-      row.text:SetText(marker..(r.item==0 and r.count..'g' or r.count..'x '..name)..'\n|cff909090to '..displayName(r.by)..((r.note or '')~='' and (' - '..r.note) or '')..'|r')
+      row.text:SetText(marker..GV.requestLabel(r,true)..'\n|cff909090to '..displayName(r.to or r.by)..((r.note or '')~='' and (' - '..r.note) or '')..'|r')
     end
   end
   f.empty:SetShown(#list==0)
 end
 -- Bank toons get the mail helper and log donations waiting in the mailbox; everyone else gets the Donate panel.
 function GV.mailOpened()
-  if not GV.isBank(myId()) then
+  -- Officers with guild bank requests to mail get the mail helper too.
+  local vaultWork=GV.isOfficer(myId()) and settings().mailHelper and #GV.toMail()>0
+  if not GV.isBank(myId()) and not vaultWork then
     if not settings().donate or #GV.bankList()==0 then return end
     GV.buildDonatePanel()
     if ui.donate then ui.donate:Show(); GV.refreshDonatePanel() end
@@ -1966,7 +2318,7 @@ function GV.refreshDonatePanel()
   local g=GV.guild()
   f.banks={}
   for _,bank in ipairs(GV.bankList()) do
-    f.banks[#f.banks+1]={id=bank.id,name=(g.banks[bank.id] and g.banks[bank.id].owner) or bank.name}
+    if not GV.isVault(bank.id) then f.banks[#f.banks+1]={id=bank.id,name=(g.banks[bank.id] and g.banks[bank.id].owner) or bank.name} end
   end
   f.choice=1
   for i,bank in ipairs(f.banks) do if bank.id==db.ui.donateTo then f.choice=i end end
@@ -2321,6 +2673,7 @@ function GV.buildRequestDialog()
   d.noteLabel=label(d,'GameFontNormal'); d.noteLabel:SetText('Note')
   d.note=editBox(d,210,'Optional, e.g. "for my alt"'); d.note:SetMaxLetters(80)
   d.warning=label(d,'GameFontRedSmall')
+  d.hint=label(d,'GameFontDisableSmall','LEFT',true); d.hint:SetPoint('RIGHT',-16,0)
   d.ok=button(d,'Request',110); d.ok:SetPoint('BOTTOMRIGHT',-16,14)
   d.cancel=button(d,CANCEL or 'Cancel',90); d.cancel:SetPoint('RIGHT',d.ok,'LEFT',-8,0)
   d.ok:SetScript('OnClick',GV.submitRequest); d.cancel:SetScript('OnClick',function() d:Hide() end)
@@ -2339,6 +2692,7 @@ function GV.checkRequest()
   elseif n<1 then warning='Enter how many you need.'
   elseif n>t.available then warning='Only '..t.available..' available on '..displayName(t.name)..'.' end
   d.warning:SetText(warning)
+  d.hint:SetText((t and GV.isVault(t.id)) and 'An officer takes this out of the guild bank and mails it. If your rank can withdraw from that tab, you can take it yourself too.' or '')
   enable(d.ok,warning=='')
   return warning==''
 end
@@ -2375,7 +2729,8 @@ function GV.openRequestDialog(e)
   d.noteLabel:ClearAllPoints(); d.noteLabel:SetPoint('TOPLEFT',18,y-44)
   d.note:ClearAllPoints(); d.note:SetPoint('LEFT',d.noteLabel,'LEFT',90,0)
   d.warning:ClearAllPoints(); d.warning:SetPoint('TOPLEFT',18,y-72)
-  d:SetHeight(-y+130)
+  d.hint:ClearAllPoints(); d.hint:SetPoint('TOPLEFT',18,y-88)
+  d:SetHeight(-y+150)
   d.amount:SetText('1'); d.note:SetText('')
   d:Show(); GV.checkRequest()
   d.amount:SetFocus(); d.amount:HighlightText()
@@ -2414,8 +2769,13 @@ function GV.buildRequestRow(row)
   row:SetScript('OnEnter',function(self)
     local q=self.entry
     if not q then return end
-    itemTooltip(self,q.item)
-    GameTooltip:AddLine('Requested by '..displayName(q.by)..' from '..displayName(q.bank)..', '..ago(tonumber(q.id:match('%-(%d+)%-%d+$')) or q.updated),1,1,1)
+    if q.item and q.item>0 then itemTooltip(self,q.item)
+    else GameTooltip:SetOwner(self,'ANCHOR_RIGHT'); GameTooltip:AddLine(q.count..'g gold') end
+    if q.items then
+      for id,count in pairs(q.items) do GameTooltip:AddDoubleLine(GV.itemInfo(id) or ('Item #'..id),count,1,1,1,1,1,1) end
+    end
+    GameTooltip:AddLine('Requested by '..displayName(q.by)..' from '..displayName(q.bank)..', '..ago(GV.requestCreated(q)),1,1,1)
+    if q.to then GameTooltip:AddLine('Craft order: '..displayName(q.bank)..' mails the materials to '..displayName(q.to),1,.82,0,true) end
     if (q.note or '')~='' then GameTooltip:AddLine('"'..q.note..'"',1,.82,0,true) end
     if q.status=='open' then GameTooltip:AddLine(STATUSES.open,.6,.6,.6)
     else GameTooltip:AddLine(STATUSES[q.status]..' by '..displayName(q.actor or '?'),.6,.6,.6) end
@@ -2427,9 +2787,10 @@ function GV.buildRequestRow(row)
   row:SetScript('OnClick',function(self) if self.entry and IsShiftKeyDown() then linkItem(self.entry.item) end end)
 end
 function GV.drawRequestRow(row,q)
-  local name,_,quality,icon=GV.itemInfo(q.item)
-  row.icon:SetTexture(icon or QUESTION_ICON)
-  row.name:SetText(q.count..'x '..(name or ('Item #'..q.item))); qualityColor(row.name,quality,not isActive(q))
+  local quality,icon
+  if q.item and q.item>0 then quality,icon=select(3,GV.itemInfo(q.item)) end
+  row.icon:SetTexture(q.item==0 and COIN_ICON or icon or QUESTION_ICON)
+  row.name:SetText(GV.requestLabel(q,true)..(q.to and (MUTED..'  for |r'..displayName(q.to)) or '')); qualityColor(row.name,quality,not isActive(q))
   local parts={displayName(q.by)..MUTED..' from |r'..displayName(q.bank),MUTED..ago(tonumber(q.id:match('%-(%d+)%-%d+$')) or q.updated)..'|r'}
   if (q.note or '')~='' then parts[#parts+1]=MUTED..'"'..q.note..'"|r' end
   row.detail:SetText(table.concat(parts,MUTED..'   ·   |r'))
@@ -2454,8 +2815,7 @@ function GV.refreshRequests()
     if q.status=='approved' then toMail=toMail+1 end
     local keep=filter=='all' or (filter=='active' and isActive(q)) or (filter=='mine' and (nameId(q.by)==me or nameId(q.bank)==me))
     if keep and term~='' then
-      local name=GV.itemInfo(q.item) or ''
-      local text=(name..' '..q.by..' '..q.bank..' '..(q.note or '')):lower()
+      local text=(GV.requestLabel(q,true)..' '..q.by..' '..q.bank..' '..(q.to or '')..' '..(q.note or '')):lower()
       keep=text:find(term,1,true)~=nil
     end
     if keep then list[#list+1]=q end
@@ -2562,7 +2922,7 @@ function GV.buildSettingsPage(page)
   ui.followAnchor=y
   ui.syncHeading=label(c,'GameFontNormal')
   ui.syncButton=button(c,'Sync now',100)
-  ui.syncButton:SetScript('OnClick',function() GV.syncAll(); GV.askManaged(); GV.askPlan(); log('Asked the guild for the latest bank contents.',true) end)
+  ui.syncButton:SetScript('OnClick',function() GV.syncAll(); GV.askManaged(); GV.askPlan(); GV.askViews(); log('Asked the guild for the latest bank contents.',true) end)
   ui.statusText=label(c,'GameFontHighlightSmall','LEFT',true); ui.statusText:SetPoint('RIGHT',c,'RIGHT',-8,0)
   ui.settingsContent=c
 end
@@ -2659,7 +3019,7 @@ function GV.ledger()
   end
   for _,r in pairs(g.requests) do
     if r.status=='mailed' then
-      list[#list+1]={kind='out',from=r.bank,to=r.by,items=r.item>0 and {[r.item]=r.count} or {},money=r.item==0 and r.count*10000 or 0,
+      list[#list+1]={kind='out',from=r.bank,to=r.to or r.by,items=GV.requestItems(r),money=r.item==0 and r.count*10000 or 0,
         when=r.updated,status='mailed',note=r.note,approvedBy=r.approvedBy,updated=r.updated}
     end
   end
@@ -3332,6 +3692,7 @@ end
 function GuildBankToons_OnCompartmentClick() GV.toggle() end
 function GV.refresh()
   updatePending=false; sinceUpdate=0
+  GV.fireCallbacks()
   GV.checkStock()
   GV.refreshMailHelper()
   GV.refreshDonatePanel()
@@ -3465,7 +3826,7 @@ function GV.status()
   end
   for _,bank in ipairs(GV.bankList()) do
     local snap=g.banks[bank.id]
-    local source=(g.managed[bank.id] and 'set by guild master') or (g.tagged[bank.id] and 'guild info') or '/gbt add'
+    local source=(GV.isVault(bank.id) and 'guild bank tab') or (g.managed[bank.id] and 'set by guild master') or (g.tagged[bank.id] and 'guild info') or '/gbt add'
     if snap then
       local count=#GV.entries(snap)
       log(string.format('  %s (%s): %d stacks, updated %s%s',displayName(bank.name),source,count,ago(snap.stamp),snap.via and (' via '..snap.via) or ''),true)
@@ -3482,7 +3843,7 @@ SlashCmdList.GUILDBANKTOONS=function(input)
   if not db then return end
   local g=GV.guild()
   if command=='' then GV.toggle()
-  elseif command=='sync' then GV.syncAll(); GV.askManaged(); GV.askPlan(); log('Asked the guild for the latest bank contents.',true)
+  elseif command=='sync' then GV.syncAll(); GV.askManaged(); GV.askPlan(); GV.askViews(); log('Asked the guild for the latest bank contents.',true)
   elseif command=='status' then GV.status()
   elseif command=='add' or command=='remove' then GV.follow(arg,command=='add')
   elseif command=='settings' or command=='options' or command=='config' then GV.open('settings')
@@ -3556,11 +3917,15 @@ end
 for _,event in ipairs({'ADDON_LOADED','PLAYER_LOGIN','PLAYER_LOGOUT','PLAYER_GUILD_UPDATE','GUILD_ROSTER_UPDATE',
   'BAG_UPDATE_DELAYED','PLAYER_MONEY','BANKFRAME_OPENED','BANKFRAME_CLOSED','PLAYERBANKSLOTS_CHANGED',
   'PLAYER_INTERACTION_MANAGER_FRAME_SHOW','PLAYER_INTERACTION_MANAGER_FRAME_HIDE','GET_ITEM_INFO_RECEIVED','CHAT_MSG_ADDON',
-  'MAIL_SHOW','MAIL_CLOSED','MAIL_SEND_SUCCESS','MAIL_FAILED','MAIL_INBOX_UPDATE','MAIL_SEND_INFO_UPDATE'}) do
+  'MAIL_SHOW','MAIL_CLOSED','MAIL_SEND_SUCCESS','MAIL_FAILED','MAIL_INBOX_UPDATE','MAIL_SEND_INFO_UPDATE',
+  'GUILDBANKFRAME_OPENED','GUILDBANKFRAME_CLOSED','GUILDBANKBAGSLOTS_CHANGED','GUILDBANK_UPDATE_MONEY'}) do
   pcall(frame.RegisterEvent,frame,event)
 end
 local function isBanker(kind)
   return Enum and Enum.PlayerInteractionType and kind==Enum.PlayerInteractionType.Banker
+end
+local function isGuildBanker(kind)
+  return Enum and Enum.PlayerInteractionType and kind==Enum.PlayerInteractionType.GuildBanker
 end
 frame:SetScript('OnEvent',function(_,event,...)
   if event=='ADDON_LOADED' then
@@ -3581,7 +3946,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     end
     -- Probe first so our name matches what guildmates see before the real sync goes out.
     later(2,function() GV.queue('V|'..key()..'|'..VERSION) end)
-    later(5,function() syncReady=true; GV.readTags(); GV.readRoster(); GV.syncAll(); GV.askManaged(); GV.askPlan() end)
+    later(5,function() syncReady=true; GV.readTags(); GV.readRoster(); GV.syncAll(); GV.askManaged(); GV.askPlan(); GV.askViews() end)
     later(7,GV.syncRequests)
   elseif event=='PLAYER_LOGOUT' then
     -- SavedVariables are written now, which is what the Discord companion picks up.
@@ -3594,8 +3959,13 @@ frame:SetScript('OnEvent',function(_,event,...)
     rescanSoon()
   elseif event=='BANKFRAME_OPENED' then setBankOpen(true)
   elseif event=='BANKFRAME_CLOSED' then setBankOpen(false)
-  elseif event=='PLAYER_INTERACTION_MANAGER_FRAME_SHOW' then if isBanker(...) then setBankOpen(true) end
-  elseif event=='PLAYER_INTERACTION_MANAGER_FRAME_HIDE' then if isBanker(...) and bankOpen then setBankOpen(false) end
+  elseif event=='PLAYER_INTERACTION_MANAGER_FRAME_SHOW' then
+    if isBanker(...) then setBankOpen(true) elseif isGuildBanker(...) then GV.vaultOpened() end
+  elseif event=='PLAYER_INTERACTION_MANAGER_FRAME_HIDE' then
+    if isBanker(...) and bankOpen then setBankOpen(false) elseif isGuildBanker(...) then GV.vaultClosed() end
+  elseif event=='GUILDBANKFRAME_OPENED' then GV.vaultOpened()
+  elseif event=='GUILDBANKFRAME_CLOSED' then GV.vaultClosed()
+  elseif event=='GUILDBANKBAGSLOTS_CHANGED' or event=='GUILDBANK_UPDATE_MONEY' then GV.schedule('vault',1,GV.scanVault)
   elseif event=='MAIL_SHOW' then GV.mailOpened()
   elseif event=='MAIL_CLOSED' then
     if ui.mail then ui.mail:Hide() end

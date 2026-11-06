@@ -215,12 +215,26 @@ def money(copper):
     return f"{g:,}g {s}s {c}c"
 
 
+def vault_public(guild, tab):
+    """Whether guild bank tab `tab` is public: the lowest rank that reported seeing the guild bank could see it.
+    The addon only saves public tabs; this is a second check before anything goes to Discord or a file."""
+    views = {int(r): v for r, v in (guild.get("vaultView") or {}).items()}
+    if not views:
+        return False
+    return bool(((views[max(views)] or {}).get("tabs") or {}).get(tab))
+
+
 def designated(guild):
-    """Bank characters the guild has designated: set by the guild master, tagged in guild info, or followed with /gbt add."""
+    """Bank characters the guild has designated (set by the guild master, tagged in guild info, or followed with
+    /gbt add), then the guild bank's public tabs, which the addon saves as *vault<tab>."""
     ids = {}
     for source in ("managed", "tagged", "extra"):
         for bank_id, name in (guild.get(source) or {}).items():
             ids.setdefault(bank_id, name)
+    vault = sorted((k for k in (guild.get("banks") or {}) if str(k).startswith("*vault")), key=lambda k: int(re.sub(r"\D", "", k) or 0))
+    for bank_id in vault:
+        if vault_public(guild, int(re.sub(r"\D", "", bank_id))):
+            ids.setdefault(bank_id, guild["banks"][bank_id].get("owner") or bank_id)
     return ids
 
 
@@ -281,13 +295,20 @@ FINAL = {"denied", "mailed", "cancelled"}
 
 def short(name):
     """A character's name for display. WoW: Forever names are first name and surname ("Vault Keeper", sometimes
-    written "Vault-Keeper"); the addon saves them without realms, but a realm the game adds always has digits."""
+    written "Vault-Keeper"); the addon saves them without realms, but a realm the game adds always has digits.
+    Guild bank tabs are saved as *vault<tab>:<tab name>."""
+    vault = re.match(r"^\*vault(\d+)(?::(.*))?$", name or "")
+    if vault:
+        return f"Guild Bank - {vault.group(2) or 'Tab ' + vault.group(1)}"
     name = re.sub(r"-[^-]*\d.*$", "", name or "?")
     return name.replace("-", " ").strip() or "?"
 
 
 def name_id(name):
-    """Same identity the addon uses: first name and surname, ignoring case, spaces and dashes."""
+    """Same identity the addon uses: first name and surname, ignoring case, spaces and dashes (*vault<tab> for tabs)."""
+    vault = re.match(r"^(\*vault\d+)", name or "")
+    if vault:
+        return vault.group(1)
     return re.sub(r"[\s-]", "", short(name)).lower()
 
 
@@ -304,10 +325,17 @@ def item_name(names, item_id):
 
 
 def request_what(req, names, link_base):
-    """'**20×** [Linen Cloth]' for items; requests for gold use item 0 with the count in whole gold."""
+    """'**20×** [Linen Cloth]' for items; requests for gold use item 0 with the count in whole gold; requests for
+    several items keep them in `items`."""
     item_id = req.get("item")
     if not item_id:
         return f"**{req.get('count')}g**"
+    if req.get("items"):
+        parts = []
+        for iid, count in sorted(req["items"].items(), key=lambda kv: -int(kv[1])):
+            name = item_name(names, iid)
+            parts.append(f"**{count}×** " + (f"[{name}]({link_base}{iid})" if link_base else f"**{name}**"))
+        return ", ".join(parts)
     name = item_name(names, item_id)
     item = f"[{name}]({link_base}{item_id})" if link_base else f"**{name}**"
     return f"**{req.get('count')}×** {item}"
@@ -315,6 +343,8 @@ def request_what(req, names, link_base):
 
 def request_line(req, names, link_base):
     line = f"📦 **{short(req.get('by'))}** requests {request_what(req, names, link_base)} from **{short(req.get('bank'))}**"
+    if req.get("to"):
+        line += f" for a craft order (mailed to **{short(req['to'])}**)"
     if req.get("note"):
         line += f' ("{req["note"]}")'
     return line
@@ -340,9 +370,15 @@ def build_request_message(req, names, link_base, ping_role):
 
 def build_approval_ping(req, names, link_base, approval_ping):
     """A separate message when a request is approved: edits don't notify anyone, new messages do."""
-    what = f"{req.get('count')}g" if not req.get("item") else f"{req.get('count')}× {item_name(names, req.get('item'))}"
+    if not req.get("item"):
+        what = f"{req.get('count')}g"
+    elif req.get("items"):
+        what = ", ".join(f"{c}× {item_name(names, i)}" for i, c in req["items"].items())
+    else:
+        what = f"{req.get('count')}× {item_name(names, req.get('item'))}"
+    who = "an officer (from the guild bank)" if str(req.get("bank", "")).startswith("*vault") else f"**{short(req.get('bank'))}**"
     text = (f"{approval_ping + ' ' if approval_ping else ''}✅ Approved by {short(req.get('actor'))}: "
-            f"**{short(req.get('bank'))}**, please mail **{what}** to **{short(req.get('by'))}**.")
+            f"{who}, please mail **{what}** to **{short(req.get('to') or req.get('by'))}**.")
     return {"username": "Guild Bank", "content": text, "allowed_mentions": mentions(approval_ping)}
 
 
@@ -352,7 +388,8 @@ def reserved_by_bank(guild):
     for req in (guild.get("requests") or {}).values():
         if req.get("status") == "approved" and req.get("item"):
             items = out.setdefault(name_id(req.get("bank")), {})
-            items[req.get("item")] = items.get(req.get("item"), 0) + int(req.get("count") or 0)
+            for item_id, count in (req.get("items") or {req.get("item"): req.get("count")}).items():
+                items[item_id] = items.get(item_id, 0) + int(count or 0)
     return out
 
 
@@ -532,9 +569,10 @@ def export_csv(data, folder, guild_filter=None):
                            money(d["money"]) if int(d.get("money") or 0) else "", d.get("status"), d.get("note") or ""))
         for r in (guild.get("requests") or {}).values():
             if r.get("status") == "mailed":
-                what = "" if not r.get("item") else f"{r.get('count')}× {item_name(names, r.get('item'))}"
+                what = "" if not r.get("item") else ", ".join(
+                    f"{c}× {item_name(names, i)}" for i, c in (r.get("items") or {r.get("item"): r.get("count")}).items())
                 gold = f"{r.get('count')}g" if not r.get("item") else ""
-                ledger.append((int(r.get("updated") or 0), "Withdrawal", short(r.get("bank")), short(r.get("by")),
+                ledger.append((int(r.get("updated") or 0), "Withdrawal", short(r.get("bank")), short(r.get("to") or r.get("by")),
                                what, gold, "mailed", r.get("note") or ""))
         path = os.path.join(folder, prefix + "ledger.csv")
         with open(path, "w", newline="", encoding="utf-8") as f:

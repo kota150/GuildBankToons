@@ -42,6 +42,14 @@ GetSendMailItem=function(i)
   for _,a in ipairs(env.attached) do if a.slot==i then return 'item' end end
 end
 SetSendMailMoney=function(c) env.sendMoney=c end
+-- The guild bank: VAULT={money=, tabs={{name=, hidden=, items={{id,count},...}}, ...}}
+GetNumGuildBankTabs=function() return VAULT and #VAULT.tabs or 0 end
+GetGuildBankTabInfo=function(t) local tab=VAULT.tabs[t]; return tab.name,'icon',not tab.hidden end
+GetGuildBankItemLink=function(t,slot) local it=VAULT.tabs[t].items[slot]; if it then return '|Hitem:'..it[1]..'|h' end end
+GetGuildBankItemInfo=function(t,slot) local it=VAULT.tabs[t].items[slot]; if it then return 'tex',it[2] end end
+GetGuildBankMoney=function() return VAULT and VAULT.money or 0 end
+QueryGuildBankTab=function() end
+MAX_GUILDBANK_SLOTS_PER_TAB=98
 GetSendMailMoney=function() return env.sendMoney or 0 end
 -- INBOX: {{sender=, subject=, money=, items={{id,count},...}}, ...}
 GetInboxNumItems=function() return INBOX and #INBOX or 0 end
@@ -461,6 +469,64 @@ db1.ui.filter='needs'; GBT(m1).refreshItems(); db1.ui.filter='all'
 GBT(m1).openExport('ledger'); GBT(m1).refreshExport(); GBT(m1).openGoldRequest()
 check('Goals, Ledger and Guild tabs, the export window and gold requests draw', True)
 
+# --- requests for several items, and craft orders (what GuildForge will use) ---
+API=lambda c: c.L.globals().GuildBankToonsAPI
+bank.setbags([[2589,20],[2589,20],[2589,6],[4306,5]]); bank.fire('BAG_UPDATE_DELAYED'); bus.run(25)
+total,per=API(m1).Available(2589)
+check('other addons can see the guild bank and what it has, per bank toon', API(m1).version==1 and API(m1).HasBank() and total>0 and per['Vault Keeper']>0)
+made,missing,why=API(m1).Request(m1.L.table_from({2589:2,4306:1}),'for bandages','Olivia Stone'); bus.run(10)
+r=latest(officer)
+check('several items go in one request, as a craft order mailed to the crafter',
+      len(list(made.values()))==1 and r['items'] and r['items'][2589]==2 and r['items'][4306]==1 and r.to=='Olivia Stone')
+if r.status=='open': GBT(officer).setRequestStatus(r,'approved'); bus.run(8)
+bank.env.attached=bank.L.table(); bank.env.mailOpen=True; bank.fire('MAIL_SHOW')
+GBT(bank).fillMail([q for q in requests_of(bank) if q.id==r.id][0])
+check('the mail helper addresses a craft order to the crafter, with every item attached',
+      bank.L.globals().SendMailNameEditBox.text=='Olivia Stone' and len(list(bank.env.attached.values()))==2)
+bank.L.globals().SendMail('Olivia Stone','x',''); bank.fire('MAIL_SEND_SUCCESS'); bus.run(8)
+check('the crafter is told the materials are in the mail', any('craft order are in your mail' in l for l in officer.logs) and latest(m1).status=='mailed')
+none=API(m1).Request(m1.L.table_from({123456:1}),'x',None)
+check('asking for something the bank does not have says so', len(list(none[0].values()))==0 and none[2])
+
+# --- Forever's guild bank ---
+# An officer opens it first: nobody of the lowest rank has said what's public yet, so nothing is shared.
+officer.L.execute('VAULT={money=1234567,tabs={{name="Mats",items={{2589,40},{2770,200}}},{name="Officers",items={{19019,1}}}}}')
+officer.fire('GUILDBANKFRAME_OPENED'); bus.run(5); officer.fire('GUILDBANKFRAME_CLOSED'); bus.run(10)
+check('nothing from the guild bank is shared until the lowest rank has said what is public', vk(m1)['*vault1'] is None and vk(officer)['*vault1'] is None)
+m2.L.execute('VAULT={money=1234567,tabs={{name="Mats",items={{2589,40},{2770,200}}},{name="Officers",hidden=true,items={{19019,1}}}}}')
+m2.fire('GUILDBANKFRAME_OPENED'); bus.run(5); m2.fire('GUILDBANKFRAME_CLOSED'); bus.run(12)
+v=vk(m1)['*vault1']
+check('opening the guild bank shares each tab you can see, with its gold', v and v.owner=='*vault1:Mats' and v.bank[2770]==200 and v.gold==1234567)
+check('tabs your rank cannot see are not shared', vk(m1)['*vault2'] is None)
+total,per=API(m1).Available(2770)
+check('guild bank tabs count as part of the guild bank (alongside bank toons)', total==240 and per['Guild Bank - Mats']==200 and per['Coin Purse']==40)
+check('guild bank gold counts toward the guild\'s gold', GBT(m1).currentGold('*')>=1234567)
+GBT(m1).createRequest(2770,10,'ore','*vault1:Mats'); bus.run(10)
+vr=latest(officer)
+if vr.status=='open': GBT(officer).setRequestStatus(vr,'approved'); bus.run(6)
+GBT(bank).setRequestStatus(latest(bank),'mailed'); bus.run(4)
+check('a bank toon cannot mark a guild bank request mailed', latest(officer).status=='approved' and latest(officer).bank=='*vault1:Mats')
+GBT(officer).setRequestStatus(latest(officer),'mailed'); bus.run(6)
+check('an officer marks a guild bank request mailed', latest(m1).status=='mailed')
+GBT(m1).open('items'); GBT(m1).refreshItems()
+
+# --- only public guild bank tabs are shared ---
+def tabs_of(c): return sorted(b.id for b in GBT(c).bankList().values() if b.id.startswith('*vault'))
+officer.fire('GUILDBANKFRAME_OPENED'); bus.run(5); officer.fire('GUILDBANKFRAME_CLOSED'); bus.run(15)
+check('an officer opening the guild bank shares only public tabs', vk(m1)['*vault2'] is None and tabs_of(m1)==['*vault1'])
+check('a restricted tab is not even kept by the officer who saw it', vk(officer)['*vault2'] is None and API(officer).Available(19019)[0]==0)
+check('everyone, guild master included, sees the same public tabs', tabs_of(officer)==tabs_of(gm)==tabs_of(bank)==['*vault1'])
+evil.L.eval('''function(stamp) C_ChatInfo.SendAddonMessage('GBTOONS',"W|Mallory|1|"..stamp.."|1:0,2:0",'GUILD') end''')(int(SERVER0+clock['t'])+5)
+bus.run(3)
+check('a member cannot report for another rank', tabs_of(officer)==['*vault1'])
+evil.L.eval('''function(stamp) C_ChatInfo.SendAddonMessage('GBTOONS',"B|*vault2:Officers|"..stamp.."|1|0|0|0",'GUILD')
+  C_ChatInfo.SendAddonMessage('GBTOONS',"E|*vault2:Officers|"..stamp,'GUILD') end''')(int(SERVER0+clock['t'])+5)
+bus.run(3)
+check('a restricted tab sent anyway is ignored', vk(m1)['*vault2'] is None)
+purse.logout(); bus.run(2); purse.saved.guilds["Verdant"].vaultView=None; purse.saved.guilds["Verdant"].banks['*vault1']=None
+purse.login(); bus.run(30)
+check('guildmates who missed it get the public tabs when they log in', tabs_of(purse)==['*vault1'] and vk(purse)['*vault1'].bank[2770]==200)
+
 # --- the Discord companion reads what the game saved ---
 import subprocess, tempfile, os, json as _json
 m1.L.execute(r"""
@@ -487,6 +553,8 @@ comp=os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])),'..','companion'
 dry=subprocess.run([sys.executable,comp,'--dry-run','--force','--savedvars',sv],capture_output=True,text=True,cwd=tmp)
 check('companion dry run reads the save and builds the goals message', dry.returncode==0 and 'Gold goals' in dry.stdout and 'Raid fund' in dry.stdout and 'What the guild needs' in dry.stdout)
 check('companion thanks donors', 'donated' in dry.stdout and 'Thank you!' in dry.stdout)
+check('companion posts guild bank tabs and craft orders', 'Guild Bank - Mats' in dry.stdout and 'craft order' in dry.stdout)
+check('the saved file holds no restricted tab, so the companion has none to post', '"*vault2"' not in m1.L.globals().SAVED and 'Guild Bank - Officers' not in dry.stdout)
 exp=subprocess.run([sys.executable,comp,'--savedvars',sv,'--export',os.path.join(tmp,'out')],capture_output=True,text=True,cwd=tmp,
                    env={k:v for k,v in os.environ.items() if k!='GUILDBANKTOONS_WEBHOOK'})
 files=sorted(os.listdir(os.path.join(tmp,'out'))) if os.path.isdir(os.path.join(tmp,'out')) else []

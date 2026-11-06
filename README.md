@@ -13,6 +13,14 @@ Built for **WoW Forever**. It also loads on Classic Era and retail, but Forever 
 3. **Optional: say who the officers are.** By default ranks 0 and 1 (guild master and the rank below) handle requests. To change it, add `[GBT:officers=2]` to the guild info, which makes ranks 0–2 officers.
 4. That's it. Guildmates click the minimap button (or type `/gbt`) to browse.
 
+## Forever's guild bank
+
+WoW Forever's own guild bank shows up too, **public tabs only**. Whenever a guildmate with the addon opens the guild bank, it shares the tabs every member can see, like a bank toon's contents: each gets its own entry in the Bank tab's sidebar ("Guild Bank - Mats"), its items count toward everything (totals, Needs, tooltips, Discord, export), and the guild bank's gold counts toward the guild's gold and gold goals.
+
+**Restricted tabs are never shared.** A tab some rank can't see stays in the game of whoever opened it: it isn't sent to guildmates, saved, posted to Discord or exported, even when an officer or the guild master opens the guild bank. The game only tells each player which tabs *their own* rank can see, so the addon learns which tabs are public from the guild's **lowest rank**: once a member of that rank has opened the guild bank (with the addon), the tabs they could see are public, and only those are shared from then on. Until then, nothing from the guild bank is shared. (A lowest-rank member running a modified addon could claim a restricted tab is public; nothing else can make one shared.)
+
+Members can request items from a guild bank tab like from a bank toon. An **officer** takes it out of the guild bank and mails it (the mail helper shows officers these requests at a mailbox). Anyone whose rank can withdraw from that tab can of course still take it themselves. The Donate panel doesn't offer guild bank tabs: deposit into those in person.
+
 ## How offline sharing works
 
 - The bank character records a snapshot with a server-time stamp whenever its bags, bank or gold change, and pushes it to everyone online.
@@ -64,7 +72,9 @@ Guildmates ask for items, an approver says yes or no, and the bank character mai
 4. **Approved items are reserved.** An approved request takes its items off the available counts in the window, tooltips and Discord ("15 (30 reserved)"), so nobody else is promised the same stack. It stays in the list as *approved* until it's mailed. The requester and the bank character are both told, and Discord posts a separate message that can ping whoever mails for the bank.
 5. **The bank character mails it.** At a mailbox, the **mail helper** opens beside the mail window with every approved request for this bank character. **Fill** switches to Send Mail, addresses it to the requester, fills the subject and note, and attaches exactly the right count from your bags, splitting a stack when needed. Check it and press **Send** (the helper's or the game's). Once the mail goes through, the request is marked **mailed** and the reservation is released. Mailed it some other way? Press **Mailed** in the Requests view.
 
-The game only sends mail on a click, so the last step is always yours. Turn on `/gbt autofill` to have the first approved request filled as soon as you open a mailbox. Items have to be in your bags to attach; the helper says so if some are still in the bank.
+The game only sends mail on a click, so the last step is always yours.
+
+**Several items in one request.** A request can hold up to 8 different items (one approval, one mail); other addons use this for crafting materials. **Craft orders** have the bank mail the items to a crafter instead of the requester: the crafter is told when they're approved and again when they arrive ("craft it and mail it to Alice"), and the Ledger shows who they went to. Turn on `/gbt autofill` to have the first approved request filled as soon as you open a mailbox. Items have to be in your bags to attach; the helper says so if some are still in the bank.
 
 Requests sync like the bank contents: everyone keeps a copy, and a guildmate logging in catches up from whoever is online. Requests only move forward (waiting → approved → mailed, or denied or cancelled), and each step is only accepted from someone allowed to take it: approvals and denials from officers, the guild master or a bank character, mailed from that request's bank character, cancel from the requester. Anything else is ignored. Active requests expire after 30 days, finished ones after 7.
 
@@ -165,6 +175,21 @@ The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/Guild
 - **Retail** (`GuildBankToons_Mainline.toc`, Midnight interface 120000–120007), handy for previewing the window. If it's flagged out of date, tick *Load out of date AddOns*.
 
 The bank scan covers both the Classic bank layout and modern bank tabs; containers a client doesn't have are skipped.
+
+## For other addons
+
+Other addons (GuildForge, for crafting materials) can use the guild bank through the global `GuildBankToonsAPI`. Check that it exists before using it; functions keep their meaning across versions, and `version` goes up when one is added.
+
+| Function | What it does |
+| --- | --- |
+| `GuildBankToonsAPI.version` | `1` |
+| `HasBank()` | `true` in a guild with at least one bank toon or shared guild bank tab |
+| `Available(itemID)` | How many are available (after approved requests), and a table of how many each bank toon or tab has |
+| `Request(items, note, mailTo)` | `items` is `{[itemID] = count}`. Asks whichever bank toons have them (one request per toon); `mailTo` makes it a craft order mailed to that crafter. Returns the request IDs, `{[itemID] = count}` the bank couldn't cover, and why nothing was made |
+| `Open(tab)` | Opens the window on a tab: `items`, `requests`, `donations`, `goals`, `settings` or `gm` |
+| `RegisterCallback(fn)` | Calls `fn()` whenever the bank, requests or plan change |
+
+An addon that uses it should list `## OptionalDeps: GuildBankToons` in its TOC so it loads after this one, and hide anything that depends on it when `GuildBankToonsAPI` is missing or `HasBank()` is false.
 
 ## Development
 

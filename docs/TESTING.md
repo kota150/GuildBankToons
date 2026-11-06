@@ -40,7 +40,15 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 - [ ] Bank toon opens its mailbox: the donation turns *Received* for everyone and the member gets a thank-you. **Check how the mail shows the sender's name** (first name only, or first and last); the addon matches either, but tell us which.
 - [ ] Mail the bank toon something *without* using the panel (or from a character without the addon): it's logged as a donation when the bank toon opens the mail.
 
-## 6. Goals, needs and rules (officer)
+## 6. Forever's guild bank and craft orders
+
+- [ ] As an officer, open the guild bank before anyone of the lowest rank has: nothing from it is shared yet.
+- [ ] As a member of the lowest rank, open the guild bank and close it. Within a few seconds, guildmates see each public tab in the Bank tab's sidebar ("Guild Bank - <tab name>"), with the right items, and the guild bank's gold on the Goals tab.
+- [ ] As an officer, open the guild bank again: an officer-only tab doesn't appear for anyone (not even the officer), and `/gbt status` doesn't list it.
+- [ ] Request an item from a guild bank tab. An officer approves it, takes it out, and at a mailbox the mail helper lists it; sending marks it mailed.
+- [ ] With GuildForge installed: request materials for a recipe as a craft order to a crafter. The bank toon's mail goes to the crafter with every item; the crafter is told to craft it and mail it to you.
+
+## 7. Goals, needs and rules (officer)
 
 - [ ] Guild tab → Goals: add a gold goal. The Goals tab shows it as a line across the chart and as a progress bar, on the member's client too.
 - [ ] Guild tab → Needs: shift-click an item into the box, set an amount, add it. Bank tab → Needs lists it. Alt-click an item on the Bank tab to change it.
@@ -48,12 +56,12 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 - [ ] Take a needed item out of the bank toon until it's below the target: the officer gets a *Low stock* alert.
 - [ ] Guild tab → Rules: set automatic approval for small requests and request 1 of something as the member. It's approved without anyone clicking.
 
-## 7. Export and Discord
+## 8. Export and Discord
 
 - [ ] Export on the Bank and Ledger tabs: the text is selected; Ctrl+C copies it; it pastes cleanly into a spreadsheet as CSV.
 - [ ] On the PC running the companion, `/gbt companion` is on, and after a `/reload` the Discord channel gets the bank messages, the goals message, and a thank-you for the received donation.
 
-## 8. Limits and busy times
+## 9. Limits and busy times
 
 - [ ] In an instance in combat, make a request; it should go out once combat ends.
 - [ ] With several guildmates online, log in on a fresh character (or after deleting `WTF/.../SavedVariables/GuildBankToons.lua`). Everything should arrive within a minute or so, and `/gbt status` shouldn't show a large *rejected* count.

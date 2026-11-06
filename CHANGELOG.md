@@ -8,6 +8,10 @@
 - On Classic Era, guilds with the same name on different realms no longer share data. On Forever guilds stay keyed by name, since guildmates report different realms; saved data moves to the right key automatically.
 
 ### Added
+- Only public guild bank tabs are shared: the ones the guild's lowest rank can see. Restricted tabs never leave the game of whoever opened them (not sent, saved, posted or exported), even for officers and the guild master.
+- Forever's guild bank: whoever opens it shares its public tabs, which then count everywhere (totals, Needs, gold goals, Discord, export). Members can request from it; officers mail those.
+- Requests can hold several items (one approval, one mail) and can be craft orders, mailed to a crafter who's told what to make and for whom.
+- `GuildBankToonsAPI` for other addons such as GuildForge: what the bank has, making requests and craft orders, opening the window, and a change callback.
 - Gold goals with a Goals tab: a bar chart of the guild bank's gold over 30 or 90 days with goal lines, progress bars, and the week's change. Goals also show on Discord.
 - Needs: officers set target amounts for items. The Bank tab's Needs view, the Donate panel's Add needed items button, and low-stock alerts for officers use them.
 - Request rules set by officers: a daily item limit per member, automatic approval of small requests for chosen ranks, and gold requests (with the mail helper filling in the gold).
