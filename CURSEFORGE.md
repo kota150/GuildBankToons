@@ -8,8 +8,7 @@ Un-Nina Bank puts your guild's bank characters and guild bank in one window that
 
 Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 
-<!-- Screenshots: add them under docs/screenshots and link them here, e.g.
-![The Bank tab](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/bank.webp) -->
+![The Bank tab: bank toons down the side, items laid out like a bag](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/bank.png)
 
 ## See everything the guild has
 
@@ -25,6 +24,9 @@ Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 - Approved items are **reserved** so nobody else is promised the same stack.
 - The bank toon's **mail helper** fills in the mail and attaches exactly the right count. Sending it closes the request.
 - Ask for **gold**, or **several items in one mail**.
+
+<!-- Add the Requests screenshot once it's saved as docs/screenshots/requests.png:
+![Requests waiting for approval](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/requests.png) -->
 - **Craft orders:** the bank mails the materials straight to a crafter. Works with [GuildForge](https://github.com/TheFrosty02/GuildForge), which adds "Get mats from guild bank" to its recipes.
 
 ## Donate by mail
@@ -37,6 +39,8 @@ Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 - **Gold goals** with a chart of the bank's gold over 30 or 90 days.
 - **Needs:** officers set how much of an item the guild wants; members see what's short, and officers get a heads-up when stock runs low.
 - **Rules:** a daily request limit, automatic approval of small requests for chosen ranks, and whether members can ask for gold.
+
+![Goals: the guild bank's gold over time, a gold goal and what the guild needs](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/goals.png)
 
 ## Discord (optional)
 

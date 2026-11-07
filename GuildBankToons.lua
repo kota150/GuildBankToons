@@ -2274,9 +2274,21 @@ end
 local function pinRight(group,parent,width,gap)
   group[1]:SetPoint('TOPRIGHT',parent,'TOPRIGHT',-(gap+(#group-1)*(width+2)),0)
 end
+-- Gold with the game's coin icons. Forever has the function under C_CurrencyInfo; failing both, plain text
+-- without the zero parts ("40c", "10g 5s").
+local CoinString=GetCoinTextureString or (C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString)
 function GV.money(copper)
-  if GetCoinTextureString then return GetCoinTextureString(copper) end
-  return math.floor(copper/10000)..'g '..(math.floor(copper/100)%100)..'s '..(copper%100)..'c'
+  copper=math.floor(tonumber(copper) or 0)
+  if CoinString then
+    local ok,text=pcall(CoinString,copper)
+    if ok and type(text)=='string' and text~='' then return text end
+  end
+  local g,s,c=math.floor(copper/10000),math.floor(copper/100)%100,copper%100
+  local parts={}
+  if g>0 then parts[#parts+1]=g..'g' end
+  if s>0 then parts[#parts+1]=s..'s' end
+  if c>0 or #parts==0 then parts[#parts+1]=c..'c' end
+  return table.concat(parts,' ')
 end
 -- A scrolling list that only builds the rows that fit, so long banks stay quick. build(row) makes a row's
 -- parts once; draw(row,entry) fills it. Rows sit in `parent`; the scroll bar takes `gutter` on the right.
@@ -2635,7 +2647,7 @@ function GV.buildItemsPage(page)
   local export=button(main,'Export',70); export:SetHeight(20); export:SetPoint('RIGHT',ui.goldRequest,'LEFT',-6,0)
   export:SetScript('OnClick',function() GV.openExport('inventory') end)
   local hint=label(main,'GameFontDisableSmall'); hint:SetPoint('BOTTOMLEFT',4,5); hint:SetPoint('RIGHT',export,'LEFT',-8,0)
-  hint:SetText('Click an item to request it   ·   Shift-click to link it   ·   Hover to see each toon\'s share')
+  hint:SetText('Click to request   ·   Shift-click to link   ·   Hover for each toon\'s share')
 end
 -- Hovering an item, as a slot or a list row: the game's tooltip plus each toon's share.
 function GV.itemEntryTooltip(owner,e)
@@ -2779,7 +2791,10 @@ function GV.checkRequest()
   elseif n<1 then warning='Enter how many you need.'
   elseif n>t.available then warning='Only '..t.available..' available on '..displayName(t.name)..'.' end
   d.warning:SetText(warning)
-  d.hint:SetText((t and GV.isVault(t.id)) and 'An officer takes this out of the guild bank and mails it. If your rank can withdraw from that tab, you can take it yourself too.' or '')
+  local hint=(t and GV.isVault(t.id)) and 'An officer takes this out of the guild bank and mails it. If your rank can withdraw from that tab, you can take it yourself too.' or ''
+  d.hint:SetText(hint)
+  -- Room for the guild bank note only when it's showing.
+  if d.baseY then d:SetHeight(-d.baseY+(hint~='' and 154 or 124)) end
   enable(d.ok,warning=='')
   return warning==''
 end
@@ -2817,7 +2832,8 @@ function GV.openRequestDialog(e)
   d.note:ClearAllPoints(); d.note:SetPoint('LEFT',d.noteLabel,'LEFT',90,0)
   d.warning:ClearAllPoints(); d.warning:SetPoint('TOPLEFT',18,y-72)
   d.hint:ClearAllPoints(); d.hint:SetPoint('TOPLEFT',18,y-88)
-  d:SetHeight(-y+150)
+  d.baseY=y
+  d:SetHeight(-y+124)
   d.amount:SetText('1'); d.note:SetText('')
   d:Show(); GV.checkRequest()
   d.amount:SetFocus(); d.amount:HighlightText()
