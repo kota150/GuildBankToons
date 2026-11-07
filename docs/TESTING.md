@@ -29,7 +29,7 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 
 - [ ] Member clicks an item, requests 1, with a note. Officers with the addon get an alert; officers without it get a whisper.
 - [ ] Officer approves it. The member is told; the item shows as reserved.
-- [ ] On the bank toon at a mailbox: the mail helper lists it; **Fill** addresses the mail and attaches exactly the right count (try one that needs a stack split). Sending marks it mailed everywhere and it shows in the Ledger as *Mailed out*.
+- [ ] On the bank toon at a mailbox: the mail helper lists it; **Fill** addresses the mail and attaches exactly the right count. **Try a request for less than a full stack** (say 3 from a stack of 20): only 3 should be attached, split into a free bag slot first. With no free bag slot, the helper should say so instead. Sending marks it mailed everywhere and the mail shows in the Ledger as *Mailed out*.
 - [ ] **Request gold** on the Bank tab: approve it, and check the mail helper puts the gold in the mail's money field.
 
 ## 5. Donations
@@ -49,6 +49,9 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 - [ ] As an officer, add and rename a bank toon on the Guild tab, and right-click a guild bank tab in the Bank tab's sidebar to rename it. Guildmates see the new names; a member can't rename.
 - [ ] Request an item from a guild bank tab. An officer approves it, takes it out, and at a mailbox the mail helper lists it; sending marks it mailed.
 - [ ] With GuildForge installed: request materials for a recipe as a craft order to a crafter. The bank toon's mail goes to the crafter with every item; the crafter is told to craft it and mail it to you.
+
+- [ ] Deposit and withdraw something (and some gold) in a shared guild bank tab, then have a guildmate open the guild bank: the Ledger shows the deposits and withdrawals, once each, and nothing from a restricted tab.
+- [ ] Mail the bank toon from a character outside the guild (or sell something on the auction house from the bank toon): the Ledger shows it as *Mail in* once the bank toon opens its mail.
 
 ## 7. Goals, needs and rules (officer)
 

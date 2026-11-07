@@ -3,6 +3,7 @@
 ## Notes: Your guild's bank toons and guild bank in one window: requests, donations by mail, goals and a public ledger, even while the bank toons are offline
 ## Author: Kota150
 ## Version: @project-version@
+## X-Curse-Project-ID: 1789595
 ## SavedVariables: GuildBankToonsDB
 ## IconTexture: Interface\Icons\INV_Misc_Bag_10_Blue
 ## AddonCompartmentFunc: GuildBankToons_OnCompartmentClick

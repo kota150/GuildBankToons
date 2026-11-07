@@ -45,7 +45,12 @@ Mail a bank toon gets from a guildmate **without the addon** is logged too, when
 
 ## The ledger
 
-The **Ledger** tab is the guild bank's public record: donations in, moves between bank toons, and requests mailed out (withdrawals), newest first. Search by name, bank toon or item, filter *All / In / Out / Mine*, and see this week's totals at the top. Entries are kept for 60 days and sync to guildmates when they log in.
+The **Ledger** tab is the guild bank's public record of what actually moved, newest first:
+
+- **Bank toons' mail:** everything a bank toon mails out (with what was really in the mail), and everything it receives: donations from guildmates, mail from outside the guild such as auction house sales (*Mail in*), and stock moved from another bank toon (*Moved*). A bank toon logs its own mail, so it has to be running the addon.
+- **Forever's guild bank log:** item and gold deposits and withdrawals (repairs and tab purchases count as gold out), read from the game's own guild bank log whenever someone with the addon opens the guild bank. Only shared tabs are read. The game gives each entry's age to the hour, so the same deposit seen by two guildmates isn't logged twice.
+
+Requests aren't in the Ledger themselves (they're on the Requests tab); when a bank toon mails one, that mail is. Search by name, bank toon or item, filter *All / In / Out / Mine*, and see this week's donations and what went out at the top. Entries are kept for 60 days and sync to guildmates when they log in.
 
 ## Goals, needs and rules
 
@@ -216,7 +221,7 @@ git tag v1.0.0
 git push origin main v1.0.0
 ```
 
-It always creates a GitHub release with the ZIP. It also uploads to CurseForge once the repository has a `CF_API_KEY` secret and the TOCs have `## X-Curse-Project-ID:` set. `CURSEFORGE.md` is the project description to paste into CurseForge.
+It always creates a GitHub release with the ZIP, and uploads to CurseForge (project 1789595, set in the TOCs) once the repository has the `CF_API_KEY` secret. The game versions CurseForge tags come from the main TOC: WoW Forever (16001), Classic Era (11509) and Retail (120107, 120105). `CURSEFORGE.md` is the project description to paste into CurseForge.
 
 ## Development
 

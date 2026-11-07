@@ -1578,6 +1578,7 @@ function GV.vaultOpened()
     if QueryGuildBankTab then later(0.3*(tab-1),function() if vaultOpen then pcall(QueryGuildBankTab,tab) end end) end
   end
   GV.schedule('vault',3,GV.scanVault)
+  GV.schedule('vaultlogq',3.5,GV.queryVaultLog)
 end
 function GV.vaultClosed()
   if not vaultOpen then return end
@@ -1693,6 +1694,10 @@ function GV.pruneVault()
     local tab=GV.isVault(id) and tonumber(id:match('%d+'))
     if tab and not GV.isSharedTab(tab) then g.gold[id]=nil end
   end
+  -- Guild bank log entries for tabs no longer shared go too.
+  for id,d in pairs(g.donations or {}) do
+    if (d.status=='deposit' or d.status=='withdraw') and not GV.vaultLogShared(nameId(d.bank)) then g.donations[id]=nil end
+  end
 end
 -- Shared tabs we don't have yet: ask for them like a bank toon's contents.
 function GV.askVault()
@@ -1769,6 +1774,85 @@ function GV.onViewMessage(action,origin,rest,sender)
   GV.cancel('offer:*view')
   GV.answered('*view',senderId,tonumber(stamp))
   GV.acceptView(origin,tonumber(rank),tonumber(stamp),text)
+end
+
+-- The guild bank's own log -------------------------------------------------------------------------------
+-- Opening the guild bank also reads its log (items and gold, in and out) for the shared tabs and adds what's
+-- new to the ledger. The game gives each entry's age only to the hour, so one already in the ledger with the
+-- same who, what and tab within a few hours is taken as the same entry.
+local LOG_KEEP=60*86400
+function GV.vaultLogShared(id)
+  local tab=tonumber((id or ''):match('^%*vault(%d+)'))
+  if not tab then return false end
+  if tab==0 then
+    for t=1,(MAX_GUILDBANK_TABS or 8) do if GV.isSharedTab(t) then return true end end
+    return false
+  end
+  return GV.isSharedTab(tab)
+end
+local function logAge(y,m,d,h)
+  return ((((tonumber(y) or 0)*365+(tonumber(m) or 0)*30+(tonumber(d) or 0))*24)+(tonumber(h) or 0))*3600
+end
+local function logKey(status,by,bank,items,money)
+  local parts={}
+  for id,c in pairs(items or {}) do parts[#parts+1]=id..':'..c end
+  table.sort(parts)
+  return status..'|'..tostring(nameId(by))..'|'..tostring(nameId(bank))..'|'..table.concat(parts,',')..'|'..(money or 0)
+end
+function GV.queryVaultLog()
+  if not QueryGuildBankLog or not GetNumGuildBankTabs then return end
+  for tab=1,(GetNumGuildBankTabs() or 0) do if GV.isSharedTab(tab) then pcall(QueryGuildBankLog,tab) end end
+  -- The gold log is the one after the last tab.
+  pcall(QueryGuildBankLog,(MAX_GUILDBANK_TABS or 8)+1)
+  GV.schedule('vaultlog',2,GV.scanVaultLog)
+end
+function GV.scanVaultLog()
+  local g=GV.guild()
+  if not g or not GetNumGuildBankTransactions or not GetGuildBankTransaction then return end
+  local found={}
+  for tab=1,(GetNumGuildBankTabs and GetNumGuildBankTabs() or 0) do
+    local snap=g.banks['*vault'..tab]
+    if snap and GV.isSharedTab(tab) then
+      for i=1,(GetNumGuildBankTransactions(tab) or 0) do
+        local kind,who,link,count,_,_,y,m,d,h=GetGuildBankTransaction(tab,i)
+        local item=type(link)=='string' and not isSecret(link) and tonumber(link:match('item:(%d+)'))
+        if (kind=='deposit' or kind=='withdraw') and item and type(who)=='string' and not isSecret(who) then
+          found[#found+1]={status=kind,by=who,bank=snap.owner,items={[item]=tonumber(count) or 1},money=0,when=now()-logAge(y,m,d,h)}
+        end
+      end
+    end
+  end
+  if GV.vaultLogShared('*vault0') and GetNumGuildBankMoneyTransactions and GetGuildBankMoneyTransaction then
+    for i=1,(GetNumGuildBankMoneyTransactions() or 0) do
+      local kind,who,amount,y,m,d,h=GetGuildBankMoneyTransaction(i)
+      amount=tonumber(amount)
+      if type(who)=='string' and not isSecret(who) and amount and amount>0 then
+        -- Repairs and buying tabs are gold going out too.
+        found[#found+1]={status=kind=='deposit' and 'deposit' or 'withdraw',by=who,bank='*vault0:Gold',items={},money=amount,
+          when=now()-logAge(y,m,d,h),note=(kind~='deposit' and kind~='withdraw') and tostring(kind) or ''}
+      end
+    end
+  end
+  local matched,added={},0
+  for _,e in ipairs(found) do
+    local sig=logKey(e.status,e.by,e.bank,e.items,e.money)
+    local match
+    for id,d in pairs(g.donations) do
+      if not matched[id] and (d.status=='deposit' or d.status=='withdraw') and math.abs((d.created or 0)-e.when)<=3*3600
+        and logKey(d.status,d.by,d.bank,d.items,d.money)==sig then match=id; break end
+    end
+    if match then
+      matched[match]=true
+    elseif now()-e.when<=LOG_KEEP then
+      added=added+1
+      local d={id='v'..myId()..'-'..now()..'-'..added,by=displayName(e.by),bank=e.bank,items=e.items,money=e.money,note=e.note or '',
+        created=e.when,updated=now(),status=e.status,actor=key()}
+      g.donations[d.id]=d
+      matched[d.id]=true
+      GV.queue(GV.donationPayload(d))
+    end
+  end
+  if added>0 then GV.note('guild bank log: '..added..' new entr'..(added==1 and 'y' or 'ies')); requestUpdate() end
 end
 
 -- For other addons ------------------------------------------------------------------------------------
@@ -1860,9 +1944,26 @@ local function mailBodyBox()
   if SendMailBodyEditBox then return SendMailBodyEditBox end
   if MailEditBox and MailEditBox.GetEditBox then return MailEditBox:GetEditBox() end
 end
--- Attaches exactly `count` of item from the bags: whole stacks first, then one split for the rest.
-function GV.attachItems(item,count)
-  if not (PickupItem and ClickSendMailItemButton) then return false,'This client can\'t attach mail items from an addon.' end
+-- The first Send Mail attachment slot that's free.
+local function freeAttachment()
+  for i=1,(ATTACHMENTS_MAX_SEND or 12) do
+    if not (GetSendMailItem and GetSendMailItem(i)) then return i end
+  end
+end
+function GV.emptyBagSlot()
+  for _,bag in ipairs(GV.bagIds()) do
+    local ok,slots=pcall(GetNumSlots,bag)
+    if ok and type(slots)=='number' and not isSecret(slots) then
+      for slot=1,slots do if not GV.slotItem(bag,slot) then return bag,slot end end
+    end
+  end
+end
+-- Attaches exactly `count` of item from the bags: whole stacks first, then the rest split off. A split
+-- attached straight from the cursor sends the whole stack it came from, so the split is put in an empty bag
+-- slot first and attached from there once it lands, a moment later. done(ok, why) runs when it's finished.
+function GV.attachItems(item,count,done)
+  done=done or function() end
+  if not (PickupItem and ClickSendMailItemButton) then done(false,'This client can\'t attach mail items from an addon.'); return end
   if ClearCursor then ClearCursor() end
   local stacks,have={},0
   for _,bag in ipairs(GV.bagIds()) do
@@ -1874,33 +1975,56 @@ function GV.attachItems(item,count)
       end
     end
   end
-  if have<count then return false,'Only '..have..' in your bags. Take the rest out of the bank first.' end
+  if have<count then done(false,'Only '..have..' in your bags. Take the rest out of the bank first.'); return end
   table.sort(stacks,function(a,b) return a.count>b.count end)
-  local maxSlots,used=ATTACHMENTS_MAX_SEND or 12,0
-  local function nextSlot()
-    while used<maxSlots do
-      used=used+1
-      if not (GetSendMailItem and GetSendMailItem(used)) then return used end
-    end
-  end
   local left,partial=count,nil
   for _,s in ipairs(stacks) do
     if left==0 then break end
     if s.count<=left then
-      local slotIndex=nextSlot()
-      if not slotIndex then return false,'Out of attachment slots; send this mail and fill again for the rest.' end
+      local slotIndex=freeAttachment()
+      if not slotIndex then done(false,'Out of attachment slots; send this mail and fill again for the rest.'); return end
       PickupItem(s.bag,s.slot); ClickSendMailItemButton(slotIndex)
       left=left-s.count
     elseif not partial then
       partial=s
     end
   end
-  if left>0 then
-    local slotIndex=nextSlot()
-    if not slotIndex or not SplitItem then return false,'Couldn\'t split a stack; attach the last '..left..' by hand.' end
-    SplitItem(partial.bag,partial.slot,left); ClickSendMailItemButton(slotIndex)
+  if left==0 then done(true); return end
+  local bag,slot=GV.emptyBagSlot()
+  if not SplitItem or not bag then
+    done(false,'Free up one bag slot so the last '..left..' can be split off the stack, then press Fill again.'); return
   end
-  return true
+  SplitItem(partial.bag,partial.slot,left)
+  PickupItem(bag,slot)
+  local tries=0
+  local function attachSplit()
+    tries=tries+1
+    local id,n,locked=GV.slotItem(bag,slot)
+    if id==item and n==left and not locked then
+      local slotIndex=freeAttachment()
+      if not slotIndex then done(false,'Out of attachment slots; send this mail and fill again for the rest.'); return end
+      PickupItem(bag,slot); ClickSendMailItemButton(slotIndex)
+      done(true)
+    elseif tries<15 then
+      GV.schedule('split',0.2,attachSplit)
+    else
+      if ClearCursor then ClearCursor() end
+      done(false,'The split-off '..left..' didn\'t land in your bags in time; attach them by hand.')
+    end
+  end
+  GV.schedule('split',0.2,attachSplit)
+end
+-- Attaches several items one after another (splits finish a moment later); done(ok, why) at the end.
+function GV.attachAll(list,done)
+  local i=0
+  local function nextItem(ok,why)
+    if ok==false then done(false,why); return end
+    i=i+1
+    local job=list[i]
+    if not job then done(true); return end
+    GV.attachItems(job[1],job[2],nextItem)
+  end
+  nextItem()
 end
 function GV.fillMail(r)
   if not (MailFrame and MailFrame:IsShown()) then log('Open a mailbox first.',true); return end
@@ -1916,25 +2040,22 @@ function GV.fillMail(r)
     local order=r.to and ('Materials for '..displayName(r.by)..'\'s craft order: please craft it and mail it to '..displayName(r.by)..'. ') or ''
     body:SetText(order..'Approved by '..displayName(r.approvedBy or r.actor or '?')..'.'..((r.note or '')~='' and (' Note: '..r.note) or ''))
   end
-  local ok,err
+  mailFilled={id=r.id,name=name}
+  local function finished(ok,err)
+    if ok then log('Mail to '..name..' is ready. Check it, then press Send.',true) else log(err,true) end
+    requestUpdate()
+  end
   if r.item==0 then
     local copper=r.count*10000
-    if ((GetMoney and GetMoney()) or 0)<copper then ok,err=false,'This toon doesn\'t have '..r.count..'g.'
-    else
-      if MoneyInputFrame_SetCopper and SendMailMoney then MoneyInputFrame_SetCopper(SendMailMoney,copper)
-      elseif SetSendMailMoney then SetSendMailMoney(copper) end
-      ok=true
-    end
-  else
-    ok=true
-    for id,count in pairs(GV.requestItems(r)) do
-      ok,err=GV.attachItems(id,count)
-      if not ok then break end
-    end
+    if ((GetMoney and GetMoney()) or 0)<copper then finished(false,'This toon doesn\'t have '..r.count..'g.'); return end
+    if MoneyInputFrame_SetCopper and SendMailMoney then MoneyInputFrame_SetCopper(SendMailMoney,copper)
+    elseif SetSendMailMoney then SetSendMailMoney(copper) end
+    finished(true)
+    return
   end
-  mailFilled={id=r.id,name=name}
-  if ok then log('Mail to '..name..' is ready. Check it, then press Send.',true) else log(err,true) end
-  requestUpdate()
+  local list={}
+  for id,count in pairs(GV.requestItems(r)) do list[#list+1]={id,count} end
+  GV.attachAll(list,finished)
 end
 function GV.sendFilled()
   if not mailFilled then log('Press Fill on a request first.',true); return end
@@ -1947,7 +2068,9 @@ function GV.sendFilled()
 end
 -- MAIL_SEND_SUCCESS: if the mail went to the person we filled it for, that request is mailed.
 function GV.mailSent()
+  local contents,to=GV.sentContents(),lastMailTo
   GV.donationSent()
+  GV.recordMailOut(contents,to)
   local filled=mailFilled
   mailFilled=nil
   if not filled or not lastMailTo or nameId(lastMailTo)~=nameId(filled.name) then return end
@@ -2020,7 +2143,11 @@ function GV.mailOpened()
   if #list>0 and settings().autofill then later(0.3,function() GV.fillMail(list[1]) end) end
 end
 
--- Donations ---------------------------------------------------------------------------------------
+-- Donations and the ledger ---------------------------------------------------------------------------
+-- The ledger is what actually moved, one entry each (status):
+--   sent      a guildmate's donation mail, on its way          received  it arrived (logged by the bank toon)
+--   moved     mail between bank toons                          mailin    mail from outside the guild
+--   mailout   anything a bank toon mailed                      deposit / withdraw  the guild bank's own log
 -- Guildmates donate by mail. The Donate panel at a mailbox addresses the mail to a bank toon with a
 -- reference in the subject. Once it's sent the donor's client logs it as on its way, and when the bank toon
 -- opens its mailbox it confirms it as received. Mail a bank toon gets from a guildmate without the addon is
@@ -2030,6 +2157,8 @@ local DONATION_KEEP=60*86400
 local DONATION_SUBJECT='Guild bank donation'
 local donating -- {ref=, bank=, note=}: the donation the Send Mail form was filled for
 local sentMail -- {items=, money=}: what the Send Mail form held when it was sent
+-- Every status the ledger knows, and which way it goes.
+GV.LEDGER_KINDS={sent='in',received='in',mailin='in',deposit='in',moved='move',mailout='out',withdraw='out'}
 function GV.donationPayload(d)
   local items={}
   for id,count in pairs(d.items or {}) do items[#items+1]=id..':'..count end
@@ -2068,15 +2197,19 @@ end
 -- Merges one log entry. Returns true when it changed something.
 function GV.acceptDonation(d)
   local g=GV.guild()
-  if not g or not nameId(d.by) or not nameId(d.bank) or (d.status~='sent' and d.status~='received' and d.status~='moved') then return false end
+  if not g or not nameId(d.by) or not nameId(d.bank) or not GV.LEDGER_KINDS[d.status] then return false end
   if not plausible(d.updated) or now()-d.updated>DONATION_KEEP then return false end
   local mine=g.donations[d.id]
   if mine and (mine.updated>=d.updated or mine.status~='sent') then return false end
   -- Only the donor says it's on its way; only the bank toon it went to says it arrived.
   local actor=nameId(d.actor or d.by)
-  -- A move between bank toons is logged by the toon that received it.
-  local ok=(d.status=='sent' and actor==nameId(d.by)) or (d.status=='received' and actor==nameId(d.bank) and GV.isBank(actor))
-    or (d.status=='moved' and actor==nameId(d.bank) and GV.isBank(actor) and GV.isBank(nameId(d.by)))
+  -- A bank toon logs its own mail, in and out (a move between bank toons by the toon that received it).
+  -- Guild bank log entries come from whoever opened the guild bank, for shared tabs only.
+  local bank=nameId(d.bank)
+  local ok=(d.status=='sent' and actor==nameId(d.by))
+    or ((d.status=='received' or d.status=='mailin' or d.status=='mailout') and actor==bank and GV.isBank(actor))
+    or (d.status=='moved' and actor==bank and GV.isBank(actor) and GV.isBank(nameId(d.by)))
+    or ((d.status=='deposit' or d.status=='withdraw') and GV.isVault(bank) and GV.vaultLogShared(bank))
   if not ok then GV.reject('donation '..d.id..' marked '..d.status..' by '..tostring(d.actor or d.by)); return false end
   g.donations[d.id]=d
   for id in pairs(d.items) do if not GV.itemInfo(id) then loadingItems[id]=true end end
@@ -2135,10 +2268,24 @@ function GV.sendMailContents()
   end
   return items,money
 end
+-- SendMail: note what's going out, for a donation, or for the ledger when we're a bank toon.
 function GV.captureSend()
-  if not donating then return end
+  if not donating and not GV.isBank(myId()) then return end
   local items,money=GV.sendMailContents()
   sentMail={items=items,money=money}
+end
+function GV.sentContents() return sentMail end
+-- A bank toon's mail went out: it goes in the ledger with what was really attached. Mail to another bank
+-- toon is logged by that toon when it arrives, as a move.
+function GV.recordMailOut(contents,to)
+  local g,me=GV.guild(),myId()
+  if not g or not contents or not to or not GV.isBank(me) or GV.isBank(nameId(to)) then return end
+  if not next(contents.items) and (contents.money or 0)==0 then return end
+  local d={id=me..'-o'..now()..math.random(100,999),by=displayName(to),bank=key(),items=contents.items,money=contents.money or 0,
+    note='',created=now(),updated=now(),status='mailout',actor=key()}
+  g.donations[d.id]=d
+  GV.queue(GV.donationPayload(d))
+  requestUpdate()
 end
 -- MAIL_SEND_SUCCESS: a donation mail went out, so log it as on its way.
 function GV.donationSent()
@@ -2182,10 +2329,13 @@ function GV.scanInbox()
   if next(roster)==nil then return end
   for i=1,(GetInboxNumItems() or 0) do
     local _,_,sender,subject,money,cod,_,hasItem,_,returned=GetInboxHeaderInfo(i)
-    local from=not isSecret(sender) and GV.senderId(sender)
+    local member=not isSecret(sender) and GV.senderId(sender)
+    local from=member or (not isSecret(sender) and nameId(sender))
     if from and from~=me and not returned and (cod or 0)==0 and ((money or 0)>0 or hasItem) then
-      -- Mail from another bank toon is stock moving between them, not a donation.
-      local moved=GV.isBank(from)
+      -- Mail from another bank toon is stock moving between them, not a donation; mail from outside the
+      -- guild (an auction house sale, say) is just mail in.
+      local moved=member and GV.isBank(from)
+      local status=(moved and 'moved') or (member and 'received') or 'mailin'
       local title=(type(subject)=='string' and not isSecret(subject)) and subject or ''
       local ref=title:match('^'..DONATION_SUBJECT..' #(%w+)')
       local items,parts={},{}
@@ -2199,13 +2349,14 @@ function GV.scanInbox()
       local id=from..'-'..(ref or ('m'..mailKey(title..'|'..(money or 0)..'|'..table.concat(parts,','))))
       local known=g.donations[id]
       if not known or known.status=='sent' then
-        local d={id=id,by=(known and known.by) or displayName(roster[from].name),bank=key(),items=items,money=money or 0,
+        local d={id=id,by=(known and known.by) or displayName(member and roster[from].name or sender),bank=key(),items=items,money=money or 0,
           note=(known and known.note) or '',created=(known and known.created) or now(),
-          updated=math.max(now(),known and (known.updated+1) or 0),status=moved and 'moved' or 'received',actor=key()}
+          updated=math.max(now(),known and (known.updated+1) or 0),status=status,actor=key()}
         g.donations[id]=d
         GV.queue(GV.donationPayload(d))
         requestUpdate()
-        log((moved and 'Logged stock moved from ' or 'Logged a donation from ')..displayName(d.by)..': '..GV.describeDonation(d,4)..'.',true)
+        local what=({moved='Logged stock moved from ',received='Logged a donation from ',mailin='Logged mail from '})[status]
+        log(what..displayName(d.by)..': '..GV.describeDonation(d,4)..'.',true)
       end
     end
   end
@@ -3127,19 +3278,17 @@ function GV.ledger()
   local g,list=GV.guild(),{}
   if not g then return list end
   for _,d in ipairs(GV.donationList()) do
-    list[#list+1]={kind=d.status=='moved' and 'move' or 'in',from=d.by,to=d.bank,items=d.items,money=d.money or 0,
-      when=d.created,status=d.status,note=d.note,updated=d.updated}
-  end
-  for _,r in pairs(g.requests) do
-    if r.status=='mailed' then
-      list[#list+1]={kind='out',from=r.bank,to=r.to or r.by,items=GV.requestItems(r),money=r.item==0 and r.count*10000 or 0,
-        when=r.updated,status='mailed',note=r.note,approvedBy=r.approvedBy,updated=r.updated}
-    end
+    local kind=GV.LEDGER_KINDS[d.status] or 'in'
+    -- Out: from the bank to whoever got it. In and moves: from whoever sent it to the bank.
+    local from,to=d.by,d.bank
+    if kind=='out' then from,to=d.bank,d.by end
+    list[#list+1]={kind=kind,from=from,to=to,items=d.items,money=d.money or 0,when=d.created,status=d.status,note=d.note,updated=d.updated}
   end
   table.sort(list,function(a,b) if a.when~=b.when then return a.when>b.when end return a.from<b.from end)
   return list
 end
-local LEDGER_STATUS={received=GREEN..'Received|r',sent=YELLOW..'On its way|r',moved='|cff80b0ffMoved|r',mailed=ORANGE..'Mailed out|r'}
+local LEDGER_STATUS={received=GREEN..'Donated|r',sent=YELLOW..'On its way|r',moved='|cff80b0ffMoved|r',mailin=GREEN..'Mail in|r',
+  mailout=ORANGE..'Mailed out|r',deposit=GREEN..'Deposited|r',withdraw=ORANGE..'Withdrawn|r'}
 function GV.buildDonationsPage(page)
   ui.donFilter=segmented(page,{{'all','All'},{'in','In'},{'out','Out'},{'mine','Mine'}},
     function() return db.ui.donFilter end,function(v) db.ui.donFilter=v end,60)
@@ -3182,9 +3331,10 @@ function GV.buildDonationRow(row)
     end
     if e.money>0 then GameTooltip:AddDoubleLine('Gold',GV.money(e.money),1,1,1,1,1,1) end
     if (e.note or '')~='' then GameTooltip:AddLine('"'..e.note..'"',1,.82,0,true) end
-    if e.kind=='out' and e.approvedBy then GameTooltip:AddLine('Approved by '..displayName(e.approvedBy),.6,.6,.6) end
-    if e.status=='sent' then GameTooltip:AddLine('Sent '..ago(e.when)..'; '..displayName(e.to)..' hasn\'t opened it yet',.6,.6,.6)
-    elseif e.kind~='out' then GameTooltip:AddLine('Received by '..displayName(e.to)..', '..ago(e.updated),.6,.6,.6) end
+    if e.status=='sent' then GameTooltip:AddLine('Sent '..ago(e.when)..'; '..GV.bankTitle(e.to)..' hasn\'t opened it yet',.6,.6,.6)
+    elseif e.status=='deposit' or e.status=='withdraw' then GameTooltip:AddLine('From the guild bank\'s own log, about '..ago(e.when),.6,.6,.6)
+    elseif e.kind~='out' then GameTooltip:AddLine('Received by '..GV.bankTitle(e.to)..', '..ago(e.updated),.6,.6,.6)
+    else GameTooltip:AddLine('Mailed '..ago(e.when),.6,.6,.6) end
     GameTooltip:Show()
   end)
   row:SetScript('OnLeave',function() GameTooltip:Hide() end)
@@ -3204,7 +3354,8 @@ function GV.refreshDonations()
   local list,donations,donors,gold,out={},0,{},0,0
   for _,e in ipairs(GV.ledger()) do
     if now()-e.when<=WEEK then
-      if e.kind=='in' then donations=donations+1; donors[nameId(e.from)]=true; gold=gold+e.money end
+      -- Donations: from guildmates, by mail or into the guild bank.
+      if e.status=='received' or e.status=='sent' or e.status=='deposit' then donations=donations+1; donors[nameId(e.from)]=true; gold=gold+e.money end
       if e.kind=='out' then out=out+1 end
     end
     local keep=filter=='all' or (filter=='in' and e.kind=='in') or (filter=='out' and e.kind=='out')
@@ -3602,14 +3753,19 @@ function GV.exportText(kind,format)
     for _,e in ipairs(GV.ledger()) do
       local items=GV.describeDonation({items=e.items,money=0})
       if csv then
-        lines[#lines+1]=csvLine({day(e.when),({['in']='Donation',move='Move',out='Withdrawal'})[e.kind],displayName(e.from),displayName(e.to),
+        local kindName=({sent='Donation',received='Donation',mailin='Mail in',moved='Move',mailout='Mail out',deposit='Guild bank deposit',withdraw='Guild bank withdrawal'})[e.status]
+        lines[#lines+1]=csvLine({day(e.when),kindName or e.kind,GV.bankTitle(e.from),GV.bankTitle(e.to),
           items=='nothing' and '' or items,e.money>0 and plainMoney(e.money) or '',e.status,e.note or ''})
       else
         local what=GV.describeDonation({items=e.items,money=0})
         if what=='nothing' then what='' end
         if e.money>0 then what=(what~='' and (what..' and ') or '')..plainMoney(e.money) end
-        local verb=({['in']=' donated ',move=' moved ',out=' mailed out '})[e.kind]
-        lines[#lines+1]=day(e.when)..': '..displayName(e.from)..verb..what..' to '..displayName(e.to)..(e.status=='sent' and ' (on its way)' or '')
+        local verb=({sent=' donated ',received=' donated ',mailin=' mailed ',moved=' moved ',mailout=' mailed ',deposit=' deposited ',withdraw=' withdrew '})[e.status] or ' sent '
+        if e.status=='withdraw' then
+          lines[#lines+1]=day(e.when)..': '..GV.bankTitle(e.to)..verb..what..' from '..GV.bankTitle(e.from)
+        else
+          lines[#lines+1]=day(e.when)..': '..GV.bankTitle(e.from)..verb..what..' to '..GV.bankTitle(e.to)..(e.status=='sent' and ' (on its way)' or '')
+        end
       end
     end
   else
@@ -3718,15 +3874,16 @@ function GV.neededInBags()
   return out
 end
 function GV.addNeededItems()
-  local added={}
+  local list,names={},{}
   for _,need in ipairs(GV.neededInBags()) do
-    local ok,err=GV.attachItems(need.item,need.count)
-    if not ok then log(err,true); break end
-    added[#added+1]=need.count..'x '..(GV.itemInfo(need.item) or ('item #'..need.item))
+    list[#list+1]={need.item,need.count}
+    names[#names+1]=need.count..'x '..(GV.itemInfo(need.item) or ('item #'..need.item))
   end
-  if #added>0 then log('Attached what the guild needs: '..table.concat(added,', ')..'.',true)
-  else log('Nothing in your bags is on the guild\'s wanted list right now.',true) end
-  requestUpdate()
+  if #list==0 then log('Nothing in your bags is on the guild\'s wanted list right now.',true); return end
+  GV.attachAll(list,function(ok,err)
+    if ok then log('Attached what the guild needs: '..table.concat(names,', ')..'.',true) else log(err,true) end
+    requestUpdate()
+  end)
 end
 
 -- Frame -------------------------------------------------------------------------------------------
@@ -4144,7 +4301,7 @@ for _,event in ipairs({'ADDON_LOADED','PLAYER_LOGIN','PLAYER_LOGOUT','PLAYER_GUI
   'BAG_UPDATE_DELAYED','PLAYER_MONEY','BANKFRAME_OPENED','BANKFRAME_CLOSED','PLAYERBANKSLOTS_CHANGED',
   'PLAYER_INTERACTION_MANAGER_FRAME_SHOW','PLAYER_INTERACTION_MANAGER_FRAME_HIDE','GET_ITEM_INFO_RECEIVED','CHAT_MSG_ADDON',
   'MAIL_SHOW','MAIL_CLOSED','MAIL_SEND_SUCCESS','MAIL_FAILED','MAIL_INBOX_UPDATE','MAIL_SEND_INFO_UPDATE',
-  'GUILDBANKFRAME_OPENED','GUILDBANKFRAME_CLOSED','GUILDBANKBAGSLOTS_CHANGED','GUILDBANK_UPDATE_MONEY'}) do
+  'GUILDBANKFRAME_OPENED','GUILDBANKFRAME_CLOSED','GUILDBANKBAGSLOTS_CHANGED','GUILDBANK_UPDATE_MONEY','GUILDBANKLOG_UPDATE'}) do
   pcall(frame.RegisterEvent,frame,event)
 end
 local function isBanker(kind)
@@ -4190,6 +4347,7 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='GUILDBANKFRAME_OPENED' then GV.vaultOpened()
   elseif event=='GUILDBANKFRAME_CLOSED' then GV.vaultClosed()
   elseif event=='GUILDBANKBAGSLOTS_CHANGED' or event=='GUILDBANK_UPDATE_MONEY' then GV.schedule('vault',1,GV.scanVault)
+  elseif event=='GUILDBANKLOG_UPDATE' then GV.schedule('vaultlog',0.5,GV.scanVaultLog)
   elseif event=='MAIL_SHOW' then GV.mailOpened()
   elseif event=='MAIL_CLOSED' then
     if ui.mail then ui.mail:Hide() end

@@ -37,7 +37,16 @@ local function editBox() local t={} t.SetText=function(_,v) t.text=v end t.GetTe
 MailFrame=setmetatable({},Obj); function MailFrame:IsShown() return env.mailOpen end
 SendMailNameEditBox=editBox(); SendMailSubjectEditBox=editBox(); SendMailBodyEditBox=editBox()
 env.attached={}
-ClickSendMailItemButton=function(i) table.insert(env.attached,{slot=i,from=env.cursor}); env.cursor=nil end
+-- Like the game: attaching a split straight from the cursor sends the whole stack it came from.
+ClickSendMailItemButton=function(i)
+  local c=env.cursor
+  if not c then return end
+  local source=env.bags[c.bag][c.slot]
+  local count=c.split and source[2] or c.count
+  table.insert(env.attached,{slot=i,from={bag=c.bag,slot=c.slot,count=count,split=c.split}})
+  if not c.split then env.bags[c.bag][c.slot]=nil end
+  env.cursor=nil
+end
 GetSendMailItem=function(i)
   if SENDITEMS and SENDITEMS[i] then return 'Item'..SENDITEMS[i][1],SENDITEMS[i][1],nil,SENDITEMS[i][2],1 end
   for _,a in ipairs(env.attached) do if a.slot==i then return 'item' end end
@@ -55,6 +64,13 @@ GetGuildBankItemLink=function(t,slot) local it=VAULT.tabs[t].items[slot]; if it 
 GetGuildBankItemInfo=function(t,slot) local it=VAULT.tabs[t].items[slot]; if it then return 'tex',it[2] end end
 GetGuildBankMoney=function() return VAULT and VAULT.money or 0 end
 QueryGuildBankTab=function() end
+-- The guild bank log: tabs[t].log={{type,who,itemID,count,days,hours},...}, moneylog={{type,who,copper,days,hours},...}
+GetNumGuildBankTransactions=function(t) local tab=VAULT and VAULT.tabs[t]; return tab and tab.log and #tab.log or 0 end
+GetGuildBankTransaction=function(t,i) local e=VAULT.tabs[t].log[i]; return e[1],e[2],'|Hitem:'..e[3]..'|h',e[4],nil,nil,0,0,e[5] or 0,e[6] or 0 end
+GetNumGuildBankMoneyTransactions=function() return VAULT and VAULT.moneylog and #VAULT.moneylog or 0 end
+GetGuildBankMoneyTransaction=function(i) local e=VAULT.moneylog[i]; return e[1],e[2],e[3],0,0,e[4] or 0,e[5] or 0 end
+QueryGuildBankLog=function() end
+MAX_GUILDBANK_TABS=8
 MAX_GUILDBANK_SLOTS_PER_TAB=98
 GetSendMailMoney=function() return env.sendMoney or 0 end
 -- INBOX: {{sender=, subject=, money=, items={{id,count},...}}, ...}
@@ -73,9 +89,19 @@ GetGuildRosterInfo=function(i) return env.member(i) end
 StaticPopupDialogs={}
 StaticPopup_Show=function(name) env.popup(name) end
 PlaySound=noop; SOUNDKIT={TELL_MESSAGE=1}
-C_Container={PickupContainerItem=function(b,s) env.cursor={bag=b,slot=s,count=env.bags[b][s][2]} end,
+-- Picking up with a split on the cursor puts it down in that (empty) slot, as in the game. The backpack has 16 slots.
+C_Container={PickupContainerItem=function(b,s)
+    local c=env.cursor
+    if c and c.split then
+      local source=env.bags[c.bag][c.slot]
+      env.bags[b][s]={source[1],c.count}; source[2]=source[2]-c.count; env.cursor=nil
+      return
+    end
+    local it=env.bags[b][s]
+    env.cursor=it and {bag=b,slot=s,count=it[2]} or nil
+  end,
   SplitContainerItem=function(b,s,n) env.cursor={bag=b,slot=s,count=n,split=true} end,
-  GetContainerNumSlots=function(b) local bag=env.bags[b]; return bag and #bag or 0 end,
+  GetContainerNumSlots=function(b) local bag=env.bags[b]; if not bag then return 0 end; return b==0 and 16 or #bag end,
   GetContainerItemInfo=function(b,s) local it=env.bags[b] and env.bags[b][s]; if it then return {itemID=it[1],stackCount=it[2]} end end}
 GetItemInfo=function(id) return 'Item'..id,'|Hitem:'..id..'|h',1 end
 GetTime=function() return env.now() end
@@ -279,11 +305,11 @@ check('requester told it was approved', any('|cff40ff40approved|r by Olivia Ston
 check('bank character told to mail it', any('mail 30x' in l and 'Alice' in l for l in bank.logs))
 check('approved items reserved in tooltips', any('15 |cffff8040(30 reserved)|r' in l for l in tooltip(m1,2589)))
 bank.env.mailOpen=True; bank.fire('MAIL_SHOW')
-slash(bank,'mail')
+slash(bank,'mail'); bus.run(1)
 att=[dict(a.items()) for a in bank.env.attached.values()]
 cur=[dict(a['from'].items()) for a in att]
 check('mail helper addresses the requester', bank.L.globals().SendMailNameEditBox.text=='Alice')
-check('mail helper attaches exactly 30 with one split', sum(c['count'] for c in cur)==30 and sum(1 for c in cur if c.get('split'))==1 and len(cur)==3)
+check('mail helper attaches exactly 30, splitting one stack into an empty slot first', sum(c['count'] for c in cur)==30 and len(cur)==3 and not any(c.get('split') for c in cur))
 bank.L.globals().SendMail('Alice','Guild bank','hi'); bank.fire('MAIL_SEND_SUCCESS'); bus.run(5)
 check('sending the mail marks it mailed everywhere', latest(bank).status=='mailed' and latest(m1).status=='mailed' and latest(officer).status=='mailed')
 check('requester told it was mailed', any('was |cffffd100mailed|r' in l for l in m1.logs))
@@ -338,6 +364,7 @@ check('members cannot drop a GM-set bank character', managed(m1)==['coinpurse'])
 
 # --- window ---
 GBT=lambda c: c.L.globals().GuildBankToons
+bank.setbags([[2589,20],[2589,20],[2589,5]]); bank.fire('BAG_UPDATE_DELAYED')
 purse.setbags([[2592,7],[2589,5]]); purse.fire('BAG_UPDATE_DELAYED'); bus.run(20)
 rows=GBT(m1).itemRows(None,'all','','name')
 cloth=[r for r in rows.values() if r.id==2589]
@@ -441,11 +468,11 @@ gr=latest(officer)
 check('members can request gold', gr.item==0 and gr.count==1)
 GBT(officer).setRequestStatus(gr,'approved'); bus.run(8)
 bank.env.mailOpen=True; bank.fire('MAIL_SHOW'); bank.env.sendMoney=0
-GBT(bank).fillMail(latest(bank))
+GBT(bank).fillMail(latest(bank)); bus.run(1)
 check('the mail helper puts the gold in the mail', bank.env.sendMoney==10000)
 bank.L.globals().SendMail('Alice','Guild bank: 1g',''); bank.fire('MAIL_SEND_SUCCESS'); bus.run(8)
 out=[e for e in GBT(m1).ledger().values() if e.kind=='out' and e.money==10000]
-check('mailed requests show in the ledger as withdrawals', len(out)==1)
+check('what a bank toon mails goes in the ledger, with what was really in the mail', len(out)==1 and out[0].to=='Alice')
 # The first change after logging in goes out whole (the bank toon can't know what others hold); the next is a delta.
 bank.setbags([[2589,20],[2589,20],[2589,5],[2592,2]]); bank.fire('BAG_UPDATE_DELAYED'); bus.run(25)
 mark=len(bus.log)
@@ -464,7 +491,7 @@ series=list(GBT(m1).goldSeries(30,'*').values())
 check('gold history builds up for the chart', series[-1]==GBT(m1).currentGold('*') and series[-1]>0)
 inv=GBT(m1).exportText('inventory','csv'); led=GBT(m1).exportText('ledger','csv'); gold=GBT(m1).exportText('gold','csv')
 check('inventory export has a column per bank toon', inv.startswith('Item ID,Item,Quality,Available,Reserved,Total') and 'Vault Keeper' in inv.split('\n')[0])
-check('ledger export lists donations, moves and withdrawals', all(k in led for k in ('Donation','Move','Withdrawal')))
+check('ledger export lists donations, moves and mail out', all(k in led for k in ('Donation','Move','Mail out')))
 check('gold export has the history', gold.startswith('Date,') and len(gold.split('\n'))>1)
 db1=m1.L.globals().GuildBankToonsDB
 for tab in ('goals','donations','gm','items'):
@@ -486,9 +513,10 @@ check('several items go in one request, as a craft order mailed to the crafter',
       len(list(made.values()))==1 and r['items'] and r['items'][2589]==2 and r['items'][4306]==1 and r.to=='Olivia Stone')
 if r.status=='open': GBT(officer).setRequestStatus(r,'approved'); bus.run(8)
 bank.env.attached=bank.L.table(); bank.env.mailOpen=True; bank.fire('MAIL_SHOW')
-GBT(bank).fillMail([q for q in requests_of(bank) if q.id==r.id][0])
-check('the mail helper addresses a craft order to the crafter, with every item attached',
-      bank.L.globals().SendMailNameEditBox.text=='Olivia Stone' and len(list(bank.env.attached.values()))==2)
+GBT(bank).fillMail([q for q in requests_of(bank) if q.id==r.id][0]); bus.run(2)
+att=[dict(dict(a.items())['from'].items()) for a in bank.env.attached.values()]
+check('the mail helper addresses a craft order to the crafter, with exactly the items asked for',
+      bank.L.globals().SendMailNameEditBox.text=='Olivia Stone' and sorted(a['count'] for a in att)==[1,2])
 bank.L.globals().SendMail('Olivia Stone','x',''); bank.fire('MAIL_SEND_SUCCESS'); bus.run(8)
 check('the crafter is told the materials are in the mail', any('craft order are in your mail' in l for l in officer.logs) and latest(m1).status=='mailed')
 none=API(m1).Request(m1.L.table_from({123456:1}),'x',None)
@@ -548,6 +576,30 @@ check('officers can name banks for the guild', GBT(m1).bankTitle('Vault Keeper')
 check('bank names show where the bank is listed', 'Mats & Herbs' in API(m1).Available(2589)[1] and any('Mats & Herbs' in r.where for r in GBT(m1).itemRows(None,'all','','name').values()))
 GBT(m1).setBankLabel('vaultkeeper','Mine now'); bus.run(5)
 check('members cannot rename banks', GBT(m2).bankTitle('Vault Keeper')=='Mats & Herbs')
+
+# --- the ledger is what really moved: the guild bank's log, and bank toons' mail in and out ---
+def ledger_of(c,status): return [e for e in GBT(c).ledger().values() if e.status==status]
+vault_log='''VAULT={money=1234567,moneylog={{"deposit","Alice",50000,0,3},{"repair","Gwen-Master",10000,1,0}},
+  tabs={{name="Mats",items={{2589,40},{2770,200}},log={{"deposit","Alice",2589,20,0,2},{"withdraw","Bob-Smith",2770,5,0,5}}},
+        {name="Officers",hidden=%s,items={{19019,1}},log={{"deposit","Olivia-Stone",19019,1,0,1}}}}}'''
+m2.L.execute(vault_log % 'true')
+m2.fire('GUILDBANKFRAME_OPENED'); bus.run(8); m2.fire('GUILDBANKFRAME_CLOSED'); bus.run(10)
+dep,wd=ledger_of(m1,'deposit'),ledger_of(m1,'withdraw')
+check('guild bank deposits and withdrawals come from the game\'s own log', any(e['items'][2589]==20 and e['from']=='Alice' for e in dep) and any(e['items'][2770]==5 and e.to=='Bob Smith' for e in wd))
+check('the guild bank\'s gold log is in the ledger too, repairs as gold out', any(e.money==50000 for e in dep) and any(e.money==10000 and e.to=='Gwen Master' for e in wd))
+check('nothing from a restricted tab\'s log is shared', not any(19019 in dict(e['items'].items()) for e in dep+wd))
+before=len(dep)+len(wd)
+# An officer opens it an hour later: the log's ages have moved on by an hour; nothing is logged twice.
+officer.L.execute((vault_log % 'false').replace('0,2}','0,3}').replace('0,5}','0,6}').replace('0,3}},','0,4}},').replace('1,0}}','1,1}}'))
+officer.fire('GUILDBANKFRAME_OPENED'); bus.run(8); officer.fire('GUILDBANKFRAME_CLOSED'); bus.run(10)
+check('opening the guild bank again doesn\'t log anything twice', len(ledger_of(m1,'deposit'))+len(ledger_of(m1,'withdraw'))==before)
+bank.L.execute('INBOX={{sender="Alliance Auction House", subject="Auction successful: Linen Cloth", money=1500}}')
+bank.fire('MAIL_INBOX_UPDATE'); bus.run(5)
+check('mail from outside the guild is logged as mail in', any(e.money==1500 and e['from']=='Alliance Auction' for e in ledger_of(m1,'mailin')))
+bank.env.sendMoney=20000; bank.L.globals().SendMail('Coin Purse','restock',''); bank.fire('MAIL_SEND_SUCCESS'); bus.run(5)
+check('mail to another bank toon is left for that toon to log as a move', not any(e.to=='Coin Purse' for e in ledger_of(m1,'mailout')))
+check('requests themselves are not in the ledger', not ledger_of(m1,'mailed'))
+GBT(m1).open('donations'); GBT(m1).refreshDonations()
 
 # --- the Discord companion reads what the game saved ---
 import subprocess, tempfile, os, json as _json

@@ -20,7 +20,7 @@ First release, as **Un-Nina Bank** (it started out as *Forever - Guild Bank Toon
 
 ### Requests
 - Click an item to request it: pick the bank toon, how many and a note. Officers, the guild master and bank toons approve or deny; approvers with the addon get an alert, officers without it get a whisper.
-- Approved items are reserved until mailed. At the mailbox, the bank toon's **mail helper** fills in the mail and attaches exactly the right count; sending it marks the request mailed.
+- Approved items are reserved until mailed. At the mailbox, the bank toon's **mail helper** fills in the mail and attaches exactly the right count, splitting a stack into a free bag slot first when it has to; sending it marks the request mailed.
 - **Gold requests**, and requests for **several items** in one mail.
 - **Craft orders:** the bank mails the materials to a crafter, who's told what to make and for whom.
 - **Rules** set by officers: a daily item limit per member, and automatic approval of small requests for chosen ranks.
@@ -28,7 +28,7 @@ First release, as **Un-Nina Bank** (it started out as *Forever - Guild Bank Toon
 ### Donations and the ledger
 - A **Donate** panel beside the mail window fills in a donation to a bank toon; **Add needed items** attaches anything the guild needs from your bags.
 - The bank toon confirms each donation when it opens its mailbox, and also logs mail from guildmates without the addon.
-- The **Ledger** is the public record: donations in, mailed-out requests, and moves between bank toons.
+- The **Ledger** is the public record of what really moved: everything bank toons mail out and receive (donations, mail from outside the guild, moves between bank toons), and deposits and withdrawals of items and gold from Forever's guild bank log for shared tabs.
 
 ### Goals and needs
 - **Gold goals** with a chart of the guild bank's gold over 30 or 90 days, goal lines, progress bars and the week's change.

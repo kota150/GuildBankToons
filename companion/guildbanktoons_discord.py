@@ -480,7 +480,8 @@ def top_donors(guild, days=7, now=None):
     now = now or time.time()
     totals = {}
     for d in (guild.get("donations") or {}).values():
-        if d.get("status") in ("received", "sent") and now - int(d.get("created") or 0) <= days * 86400:
+        # Donations: by mail, or straight into the guild bank.
+        if d.get("status") in ("received", "sent", "deposit") and now - int(d.get("created") or 0) <= days * 86400:
             t = totals.setdefault(short(d.get("by")), [0, 0, 0])
             t[0] += 1
             t[1] += sum(int(c) for c in (d.get("items") or {}).values())
@@ -570,19 +571,17 @@ def export_csv(data, folder, guild_filter=None):
                 w.writerow([item_id, item_name(names, item_id), info.get("q", ""), max(0, total - row["reserved"]),
                             row["reserved"], total, *row["held"], wants.get(item_id, wants.get(str(item_id), ""))])
         written.append(path)
+        # What really moved: bank toons' mail in and out, and the guild bank's own log.
+        kinds = {"sent": "Donation", "received": "Donation", "mailin": "Mail in", "moved": "Move",
+                 "mailout": "Mail out", "deposit": "Guild bank deposit", "withdraw": "Guild bank withdrawal"}
         ledger = []
         for d in (guild.get("donations") or {}).values():
-            kind = "Move" if d.get("status") == "moved" else "Donation"
-            ledger.append((int(d.get("created") or 0), kind, short(d.get("by")), short(d.get("bank")),
+            status = d.get("status")
+            out = status in ("mailout", "withdraw")
+            frm, to = (d.get("bank"), d.get("by")) if out else (d.get("by"), d.get("bank"))
+            ledger.append((int(d.get("created") or 0), kinds.get(status, status), bank_title(guild, frm), bank_title(guild, to),
                            donation_items({"items": d.get("items")}, names) if d.get("items") else "",
-                           money(d["money"]) if int(d.get("money") or 0) else "", d.get("status"), d.get("note") or ""))
-        for r in (guild.get("requests") or {}).values():
-            if r.get("status") == "mailed":
-                what = "" if not r.get("item") else ", ".join(
-                    f"{c}× {item_name(names, i)}" for i, c in (r.get("items") or {r.get("item"): r.get("count")}).items())
-                gold = f"{r.get('count')}g" if not r.get("item") else ""
-                ledger.append((int(r.get("updated") or 0), "Withdrawal", short(r.get("bank")), short(r.get("to") or r.get("by")),
-                               what, gold, "mailed", r.get("note") or ""))
+                           money(d["money"]) if int(d.get("money") or 0) else "", status, d.get("note") or ""))
         path = os.path.join(folder, prefix + "ledger.csv")
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)

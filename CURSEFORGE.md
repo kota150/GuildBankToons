@@ -32,7 +32,11 @@ Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 ## Donate by mail
 
 - A **Donate** panel beside the mail window addresses your donation and attaches what the guild needs most with one button.
-- The bank toon confirms each donation when it opens its mail, and every donation lands in the public **Ledger** with a thank-you.
+- The bank toon confirms each donation when it opens its mail, and the donor gets a thank-you.
+
+## A ledger of what really moved
+
+The **Ledger** shows everything that came in and went out: what bank toons mail and receive, and the deposits and withdrawals (items and gold) from the guild bank's own log, for the tabs the guild shares.
 
 ## Goals, needs and rules
 
