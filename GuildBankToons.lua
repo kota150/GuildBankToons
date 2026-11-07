@@ -1,4 +1,4 @@
--- Forever - Guild Bank Toons (folder GuildBankToons) - built for WoW: Forever; also loads on Classic Era and retail. Shares the bags, bank and gold of the guild's bank characters
+-- Un-Nina Bank (folder GuildBankToons; formerly Forever - Guild Bank Toons) - built for WoW: Forever; also loads on Classic Era and retail. Shares the bags, bank and gold of the guild's bank characters
 -- over guild addon chat. Every guildmate keeps a copy and passes it on, so the bank stays browsable while
 -- the bank character is offline. The SavedVariables file doubles as the export for the Discord companion.
 -- Look the addon up by the folder WoW loaded it from: the modern lookup errors on an unknown name.
@@ -51,7 +51,7 @@ local InsertChatLink=(ChatFrameUtil and ChatFrameUtil.InsertLink) or ChatEdit_In
 local function settings() return db and db.settings or {} end
 local function log(s,always)
   if not always and settings().quiet then return end
-  print('|cffd8aa55Guild Bank Toons:|r '..tostring(s))
+  print('|cffd8aa55Un-Nina Bank:|r '..tostring(s))
 end
 -- Server time, so stamps from different players' machines compare fairly.
 local function now() return (GetServerTime and GetServerTime()) or (time and time()) or 0 end
@@ -427,7 +427,8 @@ function GV.messagingBlocked()
   end
   return false
 end
--- Forever doesn't let trial accounts send addon messages: they can browse what guildmates share, nothing more.
+-- Whether the game flags this as a trial account. Only shown in /gbt debug: Forever blocks trial accounts'
+-- addon messages itself, and the flags can be set on accounts that send just fine, so we never hold back.
 function GV.isTrial()
   for _,check in ipairs({IsTrialAccount,IsVeteranTrialAccount}) do
     if type(check)=='function' and check()==true then return true end
@@ -436,17 +437,30 @@ function GV.isTrial()
 end
 -- onSent runs once the message has actually gone out (it may wait behind others and the game's limit).
 function GV.queue(payload,isUrgent,onSent)
-  if GV.isTrial() then return end
   local lane=isUrgent and urgent or queue
   if #lane<500 then lane[#lane+1]={payload,onSent} end
 end
 function GV.queued() return #queue+#urgent end
+-- The message log: what we sent and received, and anything rejected or ignored, with why. /gbt debug shows
+-- the end of it; Settings -> Message log shows all of it, ready to copy into a bug report.
+GV.trace={}
+local addonEvents,ourEvents=0,0
+function GV.note(text)
+  local stamp=(date and date('%H:%M:%S')) or tostring(math.floor(GetTime()))
+  GV.trace[#GV.trace+1]=stamp..'  '..tostring(text)
+  if #GV.trace>300 then table.remove(GV.trace,1) end
+end
+function GV.reject(reason)
+  rejected=rejected+1
+  GV.note('REJECTED '..reason)
+end
 -- Returns false when the client throttled the message so it's retried.
 function GV.rawSend(payload)
   if not (IsInGuild and IsInGuild()) then return true end
   local fn=(C_ChatInfo and C_ChatInfo.SendAddonMessage) or SendAddonMessage
   if not fn then return true end
   local result=fn(PREFIX,payload,'GUILD')
+  GV.note('sent '..payload:sub(1,120)..(result==nil and '' or ('  -> '..tostring(result))))
   if result==false or (type(result)=='number' and result~=0) then return false end
   sent=sent+1
   return true
@@ -645,7 +659,10 @@ function GV.onMessage(msg,sender)
   if action=='C' or action=='K' then GV.onPlanMessage(action,origin,rest,sender); return end
   if action=='X' or action=='W' then GV.onViewMessage(action,origin,rest,sender); return end
   local g,id=GV.guild(),nameId(origin)
-  if not g or not id or not GV.isBank(id) then return end
+  if not g or not id or not GV.isBank(id) then
+    if g and (action=='B' or action=='U' or action=='R') then GV.note('ignored '..action..' about '..tostring(origin)..': not one of this guild\'s bank toons here') end
+    return
+  end
   if GV.isVault(id) and not GV.isSharedTab(tonumber(id:match('%d+'))) then return end
   local senderId=(not isSecret(sender) and nameId(sender)) or '?'
   if senderId==myId() then return end
@@ -719,7 +736,7 @@ function GV.onMessage(msg,sender)
       via=(not p.fromOwner) and p.via or nil,received=now()}
     snap.hash=GV.hash(snap)
     -- A dropped or mangled message leaves the snapshot incomplete; the next sync fetches it again.
-    if p.n~=p.count or snap.hash~=p.hash then rejected=rejected+1; return end
+    if p.n~=p.count or snap.hash~=p.hash then GV.reject('copy of '..id..' from '..senderId..' arrived incomplete or changed ('..p.n..' of '..p.count..' entries)'); return end
     local current=g.banks[id]
     if current and current.stamp>=snap.stamp and not (p.fromOwner and current.hash~=snap.hash) then return end
     g.banks[id]=snap
@@ -946,7 +963,7 @@ function GV.acceptRequest(r,relayed)
   local actor=(r.status=='open') and nameId(r.by) or nameId(r.actor)
   -- Until the roster loads nobody's rank can be checked, so approvals and denials are taken on trust.
   local trusted=(r.status=='approved' or r.status=='denied') and next(roster)==nil and actor~=nil
-  if not trusted and not GV.allowed(r,from,r.status,actor) then rejected=rejected+1; return false end
+  if not trusted and not GV.allowed(r,from,r.status,actor) then GV.reject('request '..r.id..': '..tostring(r.actor or r.by)..' may not make it '..r.status); return false end
   g.requests[r.id]=r
   for id in pairs(GV.requestItems(r)) do if not GV.itemInfo(id) then loadingItems[id]=true end end
   requestUpdate()
@@ -973,7 +990,6 @@ function GV.createRequest(item,count,note,bank,opts)
     for id in pairs(items) do if not item or items[id]>items[item] then item=id end end
     if distinct==1 then count=items[item]; items=nil end
   end
-  if GV.isTrial() then log('Trial accounts can\'t send requests in WoW Forever; ask a guildmate to request it for you.',true); return nil,'Trial account.' end
   if item==0 and GV.rule('gold')==0 then log('The guild isn\'t taking gold requests right now.',true); return nil,'Gold requests are off.' end
   local limit=GV.rule('limit')
   if limit>0 and item~=0 then
@@ -1236,7 +1252,7 @@ function GV.applyManaged(gm,stamp,names)
   if stamp<=mine or not plausible(stamp) then return end
   -- Only the guild master's list counts; wait for the roster before deciding.
   if next(roster)==nil then GV.deferredList={gm=gm,stamp=stamp,names=names}; return end
-  if not GV.isOfficer(nameId(gm)) then rejected=rejected+1; return end
+  if not GV.isOfficer(nameId(gm)) then GV.reject('bank toon list from '..tostring(gm)..', who isn\'t an officer here'); return end
   g.managed,g.managedBy,g.managedStamp=set,displayName(gm),stamp
   GV.banksChanged()
 end
@@ -1416,7 +1432,7 @@ function GV.applyPlan(by,stamp,text)
   if stamp<=(mine.stamp or 0) or not plausible(stamp) then return end
   -- Only an officer's plan counts; wait for the roster before deciding.
   if next(roster)==nil then GV.deferredPlan={by=by,stamp=stamp,text=text}; return end
-  if not GV.isOfficer(nameId(by)) then rejected=rejected+1; return end
+  if not GV.isOfficer(nameId(by)) then GV.reject('goals and rules from '..tostring(by)..', who isn\'t an officer here'); return end
   p.by,p.stamp=displayName(by),stamp
   g.plan=p
   requestUpdate()
@@ -1731,7 +1747,7 @@ function GV.acceptView(by,rank,stamp,text)
   if cur and cur.stamp>=stamp then return end
   -- A report only counts for the reporter's own rank.
   local member=roster[nameId(by)]
-  if next(roster) and (not member or member.rank~=rank) then rejected=rejected+1; return end
+  if next(roster) and (not member or member.rank~=rank) then GV.reject('guild bank view for rank '..rank..' from '..tostring(by)..', who isn\'t that rank'); return end
   local tabs={}
   for tab,visible in text:gmatch('(%d+):([01])') do tabs[tonumber(tab)]=visible=='1' end
   g.vaultView[rank]={tabs=tabs,stamp=stamp,by=displayName(by)}
@@ -2061,7 +2077,7 @@ function GV.acceptDonation(d)
   -- A move between bank toons is logged by the toon that received it.
   local ok=(d.status=='sent' and actor==nameId(d.by)) or (d.status=='received' and actor==nameId(d.bank) and GV.isBank(actor))
     or (d.status=='moved' and actor==nameId(d.bank) and GV.isBank(actor) and GV.isBank(nameId(d.by)))
-  if not ok then rejected=rejected+1; return false end
+  if not ok then GV.reject('donation '..d.id..' marked '..d.status..' by '..tostring(d.actor or d.by)); return false end
   g.donations[d.id]=d
   for id in pairs(d.items) do if not GV.itemInfo(id) then loadingItems[id]=true end end
   requestUpdate()
@@ -2095,13 +2111,10 @@ function GV.startDonation(bank,copper,note)
   if SendMailNameEditBox then SendMailNameEditBox:SetText(displayName(bank)) end
   if SendMailSubjectEditBox then SendMailSubjectEditBox:SetText(DONATION_SUBJECT..' #'..donating.ref) end
   local body=mailBodyBox()
-  if body then body:SetText((donating.note~='' and (donating.note..'\n\n') or '')..'Sent with Guild Bank Toons.') end
+  if body then body:SetText((donating.note~='' and (donating.note..'\n\n') or '')..'Sent with Un-Nina Bank.') end
   if copper and copper>0 then
     if MoneyInputFrame_SetCopper and SendMailMoney then MoneyInputFrame_SetCopper(SendMailMoney,copper)
     elseif SetSendMailMoney then SetSendMailMoney(copper) end
-  end
-  if GV.isTrial() then
-    log('Trial accounts can\'t add to the donation log in WoW Forever, but '..displayName(bank)..' will log it when they open the mail.',true)
   end
   log('Mail to '..displayName(bank)..' is ready. Right-click items in your bags to attach them, then press Send.',true)
   requestUpdate()
@@ -2762,8 +2775,7 @@ function GV.checkRequest()
   local t=d.toons[d.choice]
   for i,radio in ipairs(d.choices) do radio:SetChecked(i==d.choice) end
   local warning=''
-  if GV.isTrial() then warning='Trial accounts can\'t send requests in WoW Forever.'
-  elseif not t then warning='Nobody has this item right now.'
+  if not t then warning='Nobody has this item right now.'
   elseif n<1 then warning='Enter how many you need.'
   elseif n>t.available then warning='Only '..t.available..' available on '..displayName(t.name)..'.' end
   d.warning:SetText(warning)
@@ -2998,6 +3010,8 @@ function GV.buildSettingsPage(page)
   ui.syncHeading=label(c,'GameFontNormal')
   ui.syncButton=button(c,'Sync now',100)
   ui.syncButton:SetScript('OnClick',function() GV.syncAll(); GV.askManaged(); GV.askPlan(); GV.askViews(); log('Asked the guild for the latest bank contents.',true) end)
+  ui.logButton=button(c,'Message log',110)
+  ui.logButton:SetScript('OnClick',function() GV.openExport('log') end)
   ui.statusText=label(c,'GameFontHighlightSmall','LEFT',true); ui.statusText:SetPoint('RIGHT',c,'RIGHT',-8,0)
   ui.settingsContent=c
 end
@@ -3022,9 +3036,10 @@ function GV.refreshSettings()
   local y=ui.followAnchor-math.max(1,math.min(#followed,#ui.followRows))*24-16
   ui.syncHeading:ClearAllPoints(); ui.syncHeading:SetPoint('TOPLEFT',4,y); ui.syncHeading:SetText('Sync')
   ui.syncButton:ClearAllPoints(); ui.syncButton:SetPoint('TOPLEFT',10,y-24)
+  ui.logButton:ClearAllPoints(); ui.logButton:SetPoint('LEFT',ui.syncButton,'RIGHT',8,0)
   ui.statusText:ClearAllPoints(); ui.statusText:SetPoint('TOPLEFT',10,y-54)
   ui.statusText:SetText(string.format('Version %s   ·   playing %s%s\nMessages sent %d, received %d, rejected %d, waiting to send %d',
-    VERSION,key(),(GV.isBank(myId()) and ' (a bank toon)' or '')..(GV.isTrial() and ' (trial account: browse only)' or ''),sent,received,rejected,GV.queued()))
+    VERSION,key(),(GV.isBank(myId()) and ' (a bank toon)' or ''),sent,received,rejected,GV.queued()))
   ui.settingsContent:SetHeight(-y+100)
 end
 
@@ -3534,6 +3549,12 @@ local function plainMoney(copper)
   return math.floor(copper/10000)..'g '..(math.floor(copper/100)%100)..'s '..(copper%100)..'c'
 end
 function GV.exportText(kind,format)
+  if kind=='log' then
+    local lines=GV.debugLines()
+    lines[#lines+1]=''
+    for _,line in ipairs(GV.trace) do lines[#lines+1]=line end
+    return table.concat(lines,'\n')
+  end
   local banks,lines=GV.bankList(),{}
   local csv=format=='csv'
   if kind=='inventory' then
@@ -3728,7 +3749,7 @@ function GV.buildWindow()
   table.insert(UISpecialFrames,'GuildBankToonsFrame')
   local title=f.TitleText or label(f,'GameFontHighlight','CENTER')
   if not f.TitleText then title:SetPoint('TOP',0,-6) end
-  title:SetText('Forever - Guild Bank Toons')
+  title:SetText('Un-Nina Bank')
   local grip=CreateFrame('Button',nil,f)
   grip:SetSize(16,16); grip:SetPoint('BOTTOMRIGHT',-4,4); grip:SetFrameLevel((f:GetFrameLevel() or 0)+10)
   grip:SetNormalTexture('Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up')
@@ -3814,10 +3835,11 @@ end
 -- When another addon has loaded LibDBIcon (most minimap-button addons do), the button joins it, so it lines
 -- up with everyone else's and works with button-collector and minimap-skin addons. Otherwise it's our own
 -- button, drawn with LibDBIcon's ring and sizes and following the minimap's shape the way it does.
+-- Keeps the old name: LibDBIcon and display addons remember the button's place by it.
 local BROKER_NAME='Guild Bank Toons'
 local function dbIcon() return ui.broker and LibStub and LibStub('LibDBIcon-1.0',true) end
 function GV.minimapTooltip(tooltip)
-  tooltip:AddLine('Guild Bank Toons')
+  tooltip:AddLine('Un-Nina Bank')
   local open=GV.guild() and GV.activeRequestCount() or 0
   if open>0 then tooltip:AddLine(open..' active request'..(open==1 and '' or 's'),1,1,1) end
   if GV.guild() and #GV.bankList()>0 then tooltip:AddLine('Guild bank gold: '..GV.money(GV.currentGold('*')),1,1,1) end
@@ -3913,7 +3935,7 @@ end
 -- A page under the game's Options > AddOns that opens the Settings tab.
 function GV.registerOptions()
   local panel=CreateFrame('Frame')
-  panel.name='Forever - Guild Bank Toons'
+  panel.name='Un-Nina Bank'
   local title=label(panel,'GameFontNormalLarge'); title:SetPoint('TOPLEFT',16,-16); title:SetText(panel.name)
   local text=label(panel,'GameFontHighlight','LEFT',true); text:SetPoint('TOPLEFT',16,-46); text:SetPoint('RIGHT',-16,0)
   text:SetText('All of the addon\'s settings are on the Settings tab of its window. The guild master manages bank toons on the Guild Master tab.')
@@ -3968,6 +3990,40 @@ function GV.hookTooltips()
 end
 
 -- Slash commands ---------------------------------------------------------------------------------
+-- Everything that decides whether syncing works, for /gbt debug and the top of the message log.
+function GV.debugLines()
+  GV.readRoster()
+  local first,second=UnitName('player')
+  local iface=GetBuildInfo and select(4,GetBuildInfo())
+  local g,me=GV.guild(),myId()
+  local member=me and roster[me]
+  local registered=C_ChatInfo and C_ChatInfo.IsAddonMessagePrefixRegistered
+  local count=0
+  for _ in pairs(roster) do count=count+1 end
+  local lines={
+    string.format('Un-Nina Bank v%s on %s (interface %s)',VERSION,GV.forever and 'WoW Forever' or 'not Forever',tostring(iface)),
+    string.format('you: %s  (id %s; UnitName gives %s / %s; name %s)',key(),tostring(me),tostring(first),tostring(second),nameConfirmed and 'confirmed' or 'not confirmed yet'),
+    string.format('guild: %s; roster: %d members read; you %s',tostring((guildKey())),count,
+      member and ('found, rank '..tostring(member.rank)..(GV.isOfficer(me) and ' (officer)' or '')) or 'NOT FOUND in the roster'),
+    string.format('sending: prefix %s registered=%s (result %s); held now=%s; trial flags=%s; queued %d',PREFIX,
+      tostring(registered and registered(PREFIX)),tostring(GV.prefixResult),tostring(GV.messagingBlocked()),tostring(GV.isTrial()),GV.queued()),
+    string.format('messages: sent %d, received %d, rejected %d; addon messages heard %d (ours %d)',sent,received,rejected,addonEvents,ourEvents),
+  }
+  if g then
+    for _,bank in ipairs(GV.bankList()) do
+      local snap=g.banks[bank.id]
+      local source=(GV.isVault(bank.id) and 'guild bank tab') or (g.managed[bank.id] and 'set on the Guild tab') or (g.tagged[bank.id] and 'guild info') or '/gbt add'
+      lines[#lines+1]='bank: '..GV.bankTitle(bank.name)..' ('..source..'): '..(snap and (#GV.entries(snap)..' stacks, updated '..ago(snap.stamp)..(snap.via and (' via '..snap.via) or '')) or 'NO COPY YET')
+    end
+    if #GV.bankList()==0 then lines[#lines+1]='bank: NO BANK TOONS SET UP in this guild yet (Guild tab, or the bank list from an officer hasn\'t arrived)' end
+  end
+  return lines
+end
+function GV.debug()
+  for _,line in ipairs(GV.debugLines()) do log(line,true) end
+  log('last messages (all of them: Settings -> Message log):',true)
+  for i=math.max(1,#GV.trace-11),#GV.trace do log('   '..GV.trace[i]:gsub('|','||'):gsub('REJECTED','|cffff5a5aREJECTED|r'),true) end
+end
 function GV.status()
   local g=GV.guild()
   log(string.format('v%s; guild=%s; you=%s%s; sent=%d received=%d rejected=%d queued=%d',VERSION,tostring(guildKey()),key(),
@@ -3997,6 +4053,8 @@ SlashCmdList.GUILDBANKTOONS=function(input)
   if command=='' then GV.toggle()
   elseif command=='sync' then GV.syncAll(); GV.askManaged(); GV.askPlan(); GV.askViews(); log('Asked the guild for the latest bank contents.',true)
   elseif command=='status' then GV.status()
+  elseif command=='debug' then GV.debug()
+  elseif command=='log' then GV.openExport('log')
   elseif command=='add' or command=='remove' then GV.follow(arg,command=='add')
   elseif command=='settings' or command=='options' or command=='config' then GV.open('settings')
   elseif command=='gm' then GV.open('gm')
@@ -4085,7 +4143,7 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='PLAYER_LOGIN' then
     if not db then GV.initDB() end
     local register=(C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or RegisterAddonMessagePrefix
-    if register then register(PREFIX) end
+    if register then GV.prefixResult=register(PREFIX) end
     GV.hookTooltips()
     GV.hookMail()
     GV.setupBroker() -- before the minimap button, which can use its data object
@@ -4094,9 +4152,6 @@ frame:SetScript('OnEvent',function(_,event,...)
     pcall(GV.registerOptions)
     requestRoster()
     log('v'..VERSION..' loaded. Type /gbt to open the guild bank.')
-    if GV.isTrial() then
-      log('This is a trial account. WoW Forever doesn\'t let trial accounts send addon messages, so you can browse what guildmates share but can\'t make requests or share a bank toon.',true)
-    end
     -- Probe first so our name matches what guildmates see before the real sync goes out.
     later(2,function() GV.queue('V|'..key()..'|'..VERSION) end)
     later(5,function() syncReady=true; GV.readTags(); GV.readRoster(); GV.syncAll(); GV.askManaged(); GV.askPlan(); GV.askViews() end)
@@ -4133,7 +4188,16 @@ frame:SetScript('OnEvent',function(_,event,...)
     requestUpdate()
   elseif event=='CHAT_MSG_ADDON' then
     local prefix,msg,channel,sender=...
-    if prefix==PREFIX and channel=='GUILD' and type(msg)=='string' and not isSecret(msg) and db then GV.onMessage(msg,sender) end
+    addonEvents=addonEvents+1
+    if prefix==PREFIX then
+      ourEvents=ourEvents+1
+      if channel~='GUILD' or type(msg)~='string' or isSecret(msg) then
+        GV.note('got one on '..tostring(channel)..(isSecret(msg) and ' (hidden by the game)' or '')..'; only guild messages are read')
+      elseif db then
+        GV.note('got '..msg:sub(1,120)..'  from '..(isSecret(sender) and '<hidden>' or tostring(sender)))
+        GV.onMessage(msg,sender)
+      end
+    end
   end
 end)
 frame:SetScript('OnUpdate',function(_,elapsed)
@@ -4157,7 +4221,7 @@ frame:SetScript('OnUpdate',function(_,elapsed)
       -- Throttled anyway (the server sets the real limit): wait for the allowance to refill. A message
       -- that keeps failing is dropped so it can't stall the queue.
       allowance=0; sendFailures=sendFailures+1
-      if sendFailures>=5 then table.remove(lane,1); sendFailures=0 end
+      if sendFailures>=5 then GV.note('DROPPED after 5 failed tries: '..tostring(item[1]):sub(1,80)); table.remove(lane,1); sendFailures=0 end
     end
   end
   sinceUpdate=sinceUpdate+elapsed

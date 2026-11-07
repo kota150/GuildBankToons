@@ -1,5 +1,5 @@
 ## Interface: 120107, 120105
-## Title: |cffd8aa55Forever - Guild Bank Toons|r
+## Title: |cffd8aa55Un-Nina Bank|r
 ## Notes: Your guild's bank toons and guild bank in one window: requests, donations by mail, goals and a public ledger, even while the bank toons are offline
 ## Author: Kota150
 ## Version: @project-version@

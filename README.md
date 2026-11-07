@@ -1,6 +1,6 @@
-# Forever - Guild Bank Toons
+# Un-Nina Bank
 
-**Your guild bank character's bags, bank and gold, visible to the whole guild, even while it's offline.** Forever - Guild Bank Toons shares the bank character's contents over guild addon chat. Every guildmate running it keeps a copy and passes it on, so anyone online can show it to anyone else. A companion script posts the same contents to Discord.
+**Your guild bank character's bags, bank and gold, visible to the whole guild, even while it's offline.** Un-Nina Bank (formerly *Forever - Guild Bank Toons*) shares the bank character's contents over guild addon chat. Every guildmate running it keeps a copy and passes it on, so anyone online can show it to anyone else. A companion script posts the same contents to Discord.
 
 Built for **WoW Forever**. It also loads on Classic Era and retail, but Forever is what it's designed and tested around.
 
@@ -157,11 +157,11 @@ The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/Guild
 
 Install it from **CurseForge** (the CurseForge app picks the right version for WoW Forever, Classic Era or Retail), or by hand:
 
-1. Copy the `GuildBankToons` folder into your AddOns folder (the folder keeps that short name; the game lists it as *Forever - Guild Bank Toons*):
+1. Copy the `GuildBankToons` folder into your AddOns folder (the folder keeps that short name; the game lists it as *Un-Nina Bank*):
    - **WoW Forever**: `World of Warcraft/_forever_/Interface/AddOns/GuildBankToons`
    - Classic Era: `World of Warcraft/_classic_era_/Interface/AddOns/GuildBankToons`
    - Retail: `World of Warcraft/_retail_/Interface/AddOns/GuildBankToons`
-2. Restart the game (or `/reload`) and enable *Forever - Guild Bank Toons* on the character select AddOns screen.
+2. Restart the game (or `/reload`) and enable *Un-Nina Bank* on the character select AddOns screen.
 
 ## Compatibility
 
@@ -171,7 +171,7 @@ Install it from **CurseForge** (the CurseForge app picks the right version for W
 - **Modern API**: Forever runs on the same UI code as retail Midnight, so the addon uses the `C_Container`, `C_Item`, `C_ChatInfo` and `C_GuildInfo` APIs, retail-style frames and tabs, Options → AddOns, and the AddOns menu button. It respects Midnight's secret values and holds guild messages while the game blocks addon chat (such as combat in instances), sending them afterwards.
 - **Names**: characters are identified by first name and surname only, however the game writes them: "Vault Keeper", "Vault-Keeper", or with a realm added ("Vault-Keeper-NekRosh", "Vault-Keeper-CAMWOWUS2Realm2PvE"). Realms are ignored: guildmates on Forever can report different ones. Your own full name comes from the game at login (its surname too); if it's ever missing, the character learns it from its first message to the guild a couple of seconds in. Settings and `/gbt status` show the name it's using. This matches how GuildForge reads Forever names.
 - **Alts**: the addon remembers each of your characters separately (by the game's character ID), so alts that share a first name never get mixed up, and a character only acts as a bank toon once it's sure of its own full name. Data is kept per guild (by name on Forever; by guild and realm on Classic Era): alts in the same guild share one copy, alts in other guilds have their own. Settings and the window's size and place are shared by all your characters.
-- **Trial accounts**: Forever doesn't let trial accounts send addon messages. On a trial account the addon still shows what guildmates share, but it can't make requests or share a bank toon, and it says so when you log in and in the request dialog.
+- **Trial accounts**: Forever doesn't let trial accounts send addon messages. The addon doesn't try to guess (the game's trial flags can be set on accounts that send fine); if the game blocks you, you'll still see what guildmates share.
 
 **Also loads on**, with less testing:
 
@@ -194,6 +194,16 @@ Other addons (GuildForge, for crafting materials) can use the guild bank through
 | `RegisterCallback(fn)` | Calls `fn()` whenever the bank, requests or plan change |
 
 An addon that uses it should list `## OptionalDeps: GuildBankToons` in its TOC so it loads after this one, and hide anything that depends on it when `GuildBankToonsAPI` is missing or `HasBank()` is false.
+
+## When it isn't syncing
+
+Type **`/gbt debug`**. It shows the name you're sharing as, whether you're found in the guild roster (and your rank), whether the addon's message channel is registered, how many messages were sent, received and rejected, each bank toon with how old your copy is, and the last messages with anything **REJECTED** in red and why. **Settings → Message log** (or `/gbt log`) shows the whole log, ready to copy into Discord or a bug report.
+
+Common causes:
+- **No bank toons here yet**: the guild master or an officer adds them on the Guild tab, and the list reaches you from them or a guildmate who has it.
+- **The bank toon hasn't shared yet**: log in on it with the addon and open its bank once.
+- **"ignored ... not one of this guild's bank toons here"** in the log: you have the bank toon's contents coming in, but not the list that says it's a bank toon. `/gbt sync` asks for it again.
+- **Nothing received at all**: check `/gbt debug` on both sides; both need the addon enabled and to be in the same guild.
 
 ## Releasing
 

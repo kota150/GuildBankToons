@@ -1,10 +1,10 @@
 # Changelog
 
-All notable changes to Guild Bank Toons are listed here.
+All notable changes to Un-Nina Bank (formerly Guild Bank Toons) are listed here.
 
 ## [1.0.0] - 2026-11-07
 
-First release. Built for **WoW Forever**; also runs on Classic Era and Retail.
+First release, as **Un-Nina Bank** (it started out as *Forever - Guild Bank Toons*; the addon folder is still `GuildBankToons`, so nothing else changes). Built for **WoW Forever**; also runs on Classic Era and Retail.
 
 ### The guild bank, shared
 - **Bank toons:** the guild master or an officer adds the guild's bank characters on the Guild tab (up to 20). Their bags, bank and gold go to every guildmate running the addon, and guildmates pass them along, so the bank stays browsable while the bank toons are offline.
@@ -40,5 +40,5 @@ First release. Built for **WoW Forever**; also runs on Classic Era and Retail.
 ### Built for WoW Forever
 - Reads Forever names as first name and surname in every form the game writes them, ignores realms, and tells your alts apart.
 - Syncs politely: guildmates offer what they have and only one sends it, at the game's addon-message pace, holding messages while the game blocks addon chat.
-- Trial accounts, which Forever blocks from sending addon messages, get a browse-only mode.
+- **`/gbt debug` and a message log** (Settings → Message log) show what's being sent, received and rejected, and why, ready to copy into a bug report.
 - **For other addons:** `GuildBankToonsAPI` lets addons such as GuildForge show guild bank stock and request materials.

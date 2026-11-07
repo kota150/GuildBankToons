@@ -625,11 +625,15 @@ evil.L.globals().GuildBankToonsDB.settings.minimap=False; GBT(evil).placeMinimap
 check('hiding the button in Settings hides it in LibDBIcon too', libs.shown==False and libs.db.hide==True)
 evil.L.globals().GuildBankToonsDB.settings.minimap=True; GBT(evil).placeMinimap()
 
-# --- trial accounts (Forever blocks their addon messages) ---
-before=bus.count; known=len(requests_of(officer))
+# --- accounts the game flags as trial still try to send (the game decides) ---
 m2.L.execute('IsTrialAccount=function() return true end')
-slash(m2,'request 2589 1'); slash(m2,'sync'); bus.run(10)
-check('a trial account sends nothing', len(requests_of(officer))==known and any('Trial accounts' in l for l in m2.logs))
+slash(m2,'request 2589 1'); bus.run(10)
+check('an account flagged as trial is not held back by the addon', latest(officer).by=='Bob' and latest(officer).count==1)
+# --- /gbt debug and the message log ---
+slash(m1,'debug')
+check('/gbt debug shows name, roster, sending and banks', any('roster:' in l and 'found, rank 4' in l for l in m1.logs) and any('bank: ' in l for l in m1.logs))
+log=GBT(m1).exportText('log','text')
+check('the message log has what was sent, received and rejected', 'sent ' in log and 'got ' in log and 'REJECTED' in log)
 m2.L.execute('IsTrialAccount=nil')
 print('messages sent total:',bus.count)
 sys.exit(0 if ok else 1)
