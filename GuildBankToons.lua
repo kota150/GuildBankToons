@@ -273,7 +273,7 @@ function GV.bankList()
   -- Public guild bank tabs that someone has shared, after the bank toons.
   for id,snap in pairs(g.banks) do
     local tab=GV.isVault(id) and tonumber(id:match('%d+'))
-    if tab and not seen[id] and GV.isPublicTab(tab) then seen[id]=true; list[#list+1]={id=id,name=snap.owner,tab=tab} end
+    if tab and not seen[id] and GV.isSharedTab(tab) then seen[id]=true; list[#list+1]={id=id,name=snap.owner,tab=tab} end
   end
   table.sort(list,function(a,b)
     if (a.tab~=nil)~=(b.tab~=nil) then return b.tab~=nil end
@@ -466,7 +466,7 @@ function GV.sendSnapshot(id,asked)
   local g=GV.guild()
   local snap=g and g.banks[id]
   if not snap or not snap.stamp then return end
-  if GV.isVault(id) and not GV.isPublicTab(tonumber(id:match('%d+'))) then return end
+  if GV.isVault(id) and not GV.isSharedTab(tonumber(id:match('%d+'))) then return end
   -- Guild messages reach everyone, so one broadcast answers every request that arrives meanwhile.
   if not asked and lastSent[id]==snap.stamp and GetTime()-(lastSentAt[id] or 0)<30 then return end
   lastSent[id],lastSentAt[id]=snap.stamp,GetTime()
@@ -646,7 +646,7 @@ function GV.onMessage(msg,sender)
   if action=='X' or action=='W' then GV.onViewMessage(action,origin,rest,sender); return end
   local g,id=GV.guild(),nameId(origin)
   if not g or not id or not GV.isBank(id) then return end
-  if GV.isVault(id) and not GV.isPublicTab(tonumber(id:match('%d+'))) then return end
+  if GV.isVault(id) and not GV.isSharedTab(tonumber(id:match('%d+'))) then return end
   local senderId=(not isSecret(sender) and nameId(sender)) or '?'
   if senderId==myId() then return end
   local mine=g.banks[id]
@@ -756,9 +756,9 @@ function GV.readRoster()
   if not (GetNumGuildMembers and GetGuildRosterInfo) then return end
   for id in pairs(roster) do roster[id]=nil end
   for i=1,(GetNumGuildMembers() or 0) do
-    local name,_,rankIndex,_,_,_,_,_,online=GetGuildRosterInfo(i)
+    local name,rankName,rankIndex,_,_,_,_,_,online=GetGuildRosterInfo(i)
     local id=not isSecret(name) and nameId(name)
-    if id then roster[id]={name=name,rank=rankIndex,online=online and true or false} end
+    if id then roster[id]={name=name,rank=rankIndex,rankName=(type(rankName)=='string' and not isSecret(rankName)) and rankName or nil,online=online and true or false} end
   end
   -- A bank list that arrived before the roster could vouch for its sender.
   local d=GV.deferredList
@@ -869,7 +869,7 @@ function GV.requestLabel(r,plain)
   return table.concat(parts,', ')
 end
 function GV.describe(r,plain)
-  return GV.requestLabel(r,plain)..' from '..displayName(r.bank)..(r.to and (' to '..displayName(r.to)..' (craft order)') or '')
+  return GV.requestLabel(r,plain)..' from '..GV.bankTitle(r.bank)..(r.to and (' to '..displayName(r.to)..' (craft order)') or '')
     ..((r.note or '')~='' and (' - '..r.note) or '')
 end
 function GV.requestCreated(r) return tonumber(r.id:match('%-(%d+)%-%d+$')) or r.updated end
@@ -1141,6 +1141,18 @@ if StaticPopupDialogs then
       GV.setWant(data.item,tonumber(box and box:GetText() or '') or 0)
     end,
   }
+  StaticPopupDialogs.GUILDBANKTOONS_RENAME={
+    text='Name %s for the guild (leave empty to use its own name):',
+    button1=OKAY or 'OK',button2=CANCEL or 'Cancel',hasEditBox=true,timeout=0,whileDead=true,hideOnEscape=true,
+    OnShow=function(self,data)
+      local box=self.editBox or self.EditBox
+      if box then box:SetText((data and data.label) or ''); box:HighlightText() end
+    end,
+    OnAccept=function(self,data)
+      local box=self.editBox or self.EditBox
+      GV.setBankLabel(data.id,box and box:GetText() or '')
+    end,
+  }
   StaticPopupDialogs.GUILDBANKTOONS_CLEAR={
     text='Remove every bank toon you set for the guild?',
     button1=YES or 'Yes',button2=NO or 'No',timeout=0,whileDead=true,hideOnEscape=true,
@@ -1153,9 +1165,9 @@ if StaticPopupDialogs then
   }
 end
 
--- Bank characters set by the guild master ------------------------------------------------------------
--- The guild master runs /gbt bank add Name. The list goes to the whole guild and is relayed like the bank
--- contents, so guildmates who log in while the guild master is offline still get it.
+-- Bank characters set by the guild master or an officer --------------------------------------------------
+-- Set on the Guild tab (or /gbt bank add Name). The list goes to the whole guild and is relayed like the bank
+-- contents, so guildmates who log in while whoever changed it is offline still get it.
 --   S|me|stamp                          "this is the bank list I hold; send yours if it's newer"
 --   M|gm|stamp|part|total|name,name...  the guild master's whole list, split over `total` messages
 local MAX_MANAGED=20
@@ -1224,7 +1236,7 @@ function GV.applyManaged(gm,stamp,names)
   if stamp<=mine or not plausible(stamp) then return end
   -- Only the guild master's list counts; wait for the roster before deciding.
   if next(roster)==nil then GV.deferredList={gm=gm,stamp=stamp,names=names}; return end
-  if not GV.isGM(nameId(gm)) then rejected=rejected+1; return end
+  if not GV.isOfficer(nameId(gm)) then rejected=rejected+1; return end
   g.managed,g.managedBy,g.managedStamp=set,displayName(gm),stamp
   GV.banksChanged()
 end
@@ -1273,7 +1285,7 @@ function GV.bankCommand(arg)
   end
   GV.gmChange(verb,name)
 end
--- Adds, removes or clears the guild's bank toons; guild master only. Returns true when the list changed.
+-- Adds, removes or clears the guild's bank toons; the guild master and officers. Returns true when it changed.
 function GV.gmChange(verb,name)
   local g=GV.guild()
   if not g then log('You must be in a guild.',true); return false end
@@ -1283,8 +1295,8 @@ function GV.gmChange(verb,name)
     if C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() elseif GuildRoster then GuildRoster() end
     log('The guild roster hasn\'t loaded yet; try again in a moment.',true); return false
   end
-  if not GV.isGM(myId()) then
-    log('Only the guild master can set the guild\'s bank characters. You can follow one just for yourself in Settings.',true); return false
+  if not GV.isOfficer(myId()) then
+    log('Only officers and the guild master can set the guild\'s bank characters. You can follow one just for yourself in Settings.',true); return false
   end
   local set,count={},0
   for id,n in pairs(g.managed) do set[id]=n; count=count+1 end
@@ -1314,12 +1326,15 @@ end
 --   C|me|stamp                        "this is the plan I hold"; anyone with a newer one offers it
 --   K|officer|stamp|part|total|data   the whole plan as ;-separated entries, split over `total` messages:
 --     g~id~toon~copper~name (toon: a bank toon's id, or * for all of them)   w~itemID~target   r~rule~number
-local RULE_DEFAULTS={limit=0,autoMax=0,autoRank=0,gold=1}
+--     n~bankId~name (a display name for a bank toon or guild bank tab)
+-- vaultRank: share guild bank tabs this rank (or any lower one) can see; -1 means the lowest rank.
+local RULE_DEFAULTS={limit=0,autoMax=0,autoRank=0,gold=1,vaultRank=-1}
 local planParts={}
 function GV.plan()
   local g=GV.guild()
-  if not g then return {goals={},wants={},rules={}} end
+  if not g then return {goals={},wants={},rules={},labels={}} end
   g.plan=g.plan or {goals={},wants={},rules={}}
+  g.plan.labels=g.plan.labels or {}
   return g.plan
 end
 function GV.rule(name)
@@ -1333,24 +1348,27 @@ function GV.encodePlan(p)
   for id,goal in pairs(p.goals) do entries[#entries+1]=table.concat({'g',id,goal.toon or '*',goal.target,planClean(goal.name)},'~') end
   for item,target in pairs(p.wants) do entries[#entries+1]='w~'..item..'~'..target end
   for name,value in pairs(p.rules) do entries[#entries+1]='r~'..name..'~'..value end
+  for id,label in pairs(p.labels or {}) do entries[#entries+1]='n~'..id..'~'..planClean(label) end
   table.sort(entries)
   return entries
 end
 function GV.decodePlan(text)
-  local p={goals={},wants={},rules={}}
+  local p={goals={},wants={},rules={},labels={}}
   for entry in text:gmatch('[^;]+') do
     local kind,a,b,c,d=entry:match('^(%a)~([^~]*)~?([^~]*)~?([^~]*)~?(.*)$')
     if kind=='g' and a~='' and tonumber(c) then p.goals[a]={toon=b~='' and b or '*',target=tonumber(c),name=d}
     elseif kind=='w' and tonumber(a) and tonumber(b) then p.wants[tonumber(a)]=tonumber(b)
-    elseif kind=='r' and RULE_DEFAULTS[a]~=nil and tonumber(b) then p.rules[a]=tonumber(b) end
+    elseif kind=='r' and RULE_DEFAULTS[a]~=nil and tonumber(b) then p.rules[a]=tonumber(b)
+    elseif kind=='n' and a~='' and b~='' then p.labels[a]=b end
   end
   return p
 end
 function GV.copyPlan()
-  local p,copy=GV.plan(),{goals={},wants={},rules={}}
+  local p,copy=GV.plan(),{goals={},wants={},rules={},labels={}}
   for id,goal in pairs(p.goals) do copy.goals[id]={toon=goal.toon,target=goal.target,name=goal.name} end
   for item,target in pairs(p.wants) do copy.wants[item]=target end
   for name,value in pairs(p.rules) do copy.rules[name]=value end
+  for id,label in pairs(p.labels) do copy.labels[id]=label end
   return copy
 end
 function GV.sendPlan(asked)
@@ -1380,6 +1398,7 @@ function GV.setPlan(p)
   GV.guild().plan=p
   planParts.sentStamp=nil
   GV.sendPlan(); requestUpdate()
+  GV.vaultRuleChanged()
   return true
 end
 function GV.applyPlan(by,stamp,text)
@@ -1401,6 +1420,7 @@ function GV.applyPlan(by,stamp,text)
   p.by,p.stamp=displayName(by),stamp
   g.plan=p
   requestUpdate()
+  GV.vaultRuleChanged()
 end
 function GV.onPlanMessage(action,origin,rest,sender)
   local senderId=(not isSecret(sender) and nameId(sender)) or '?'
@@ -1427,6 +1447,18 @@ function GV.onPlanMessage(action,origin,rest,sender)
   if p.got<total then return end
   planParts[slot]=nil
   GV.applyPlan(origin,stamp,table.concat(p.texts,';'))
+end
+-- A bank's name as the guild shows it: the display name officers gave it, else the toon's or tab's name.
+function GV.bankTitle(name)
+  local id=nameId(name)
+  local label=id and GV.guild() and GV.plan().labels[id]
+  return label or displayName(name)
+end
+function GV.setBankLabel(id,label)
+  local p=GV.copyPlan()
+  label=(label or ''):gsub('^%s+',''):gsub('%s+$','')
+  p.labels[id]=label~='' and planClean(label) or nil
+  return GV.setPlan(p)
 end
 -- How many of an item are available across all bank toons, and how many the guild still needs.
 function GV.stockOf(item)
@@ -1551,10 +1583,10 @@ function GV.scanVault()
   GV.reportView(view)
   -- The guild bank's gold goes with the first public tab.
   local goldTab
-  for tab=1,tabs do if not goldTab and view[tab] and GV.isPublicTab(tab) then goldTab=tab end end
+  for tab=1,tabs do if not goldTab and view[tab] and GV.isSharedTab(tab) then goldTab=tab end end
   for tab=1,tabs do
     local name,_,viewable=GetGuildBankTabInfo(tab)
-    if viewable and not isSecret(viewable) and GV.isPublicTab(tab) then
+    if viewable and not isSecret(viewable) and GV.isSharedTab(tab) then
       local items={}
       for slot=1,(MAX_GUILDBANK_SLOTS_PER_TAB or 98) do
         local link=GetGuildBankItemLink(tab,slot)
@@ -1585,11 +1617,11 @@ function GV.scanVault()
 end
 
 -- Public guild bank tabs ---------------------------------------------------------------------------------
--- Only tabs every member can see are shared, so nothing from a restricted tab leaves the game of whoever
--- opened it. The game only tells a client which tabs its own rank can see, so each client that opens the
--- guild bank reports that for its rank (the reports spread like the plan does), and a tab is public when the
--- guild's lowest rank reported seeing it. Until a member of the lowest rank has opened the guild bank once,
--- no tabs are shared.
+-- Only tabs a chosen rank can see are shared (the lowest rank unless officers pick another on the Rules
+-- page), so nothing from a more restricted tab leaves the game of whoever opened it. The game only tells a
+-- client which tabs its own rank can see, so each client that opens the guild bank reports that for its rank
+-- (the reports spread like the plan does). Until a member of that rank, or a lower one, has opened the guild
+-- bank once, no tabs are shared.
 --   X|me|stamp                     "this is the newest report I hold"; anyone with a newer one offers it
 --   W|reporter|rank|stamp|1:1,2:0  one rank's view: tab:1 visible, tab:0 not (reporter is of that rank)
 local function encodeView(tabs)
@@ -1604,6 +1636,11 @@ function GV.myRank()
   if type(rank)~='number' or isSecret(rank) then return nil end
   return rank
 end
+function GV.rankName(rank)
+  if rank==nil then return 'unknown' end
+  for _,member in pairs(roster) do if member.rank==rank and member.rankName then return member.rankName end end
+  return 'Rank '..rank
+end
 -- The guild's lowest rank: the highest rank index anyone in the guild holds.
 function GV.lowestRank()
   local lowest
@@ -1612,28 +1649,51 @@ function GV.lowestRank()
   end
   return lowest
 end
-function GV.isPublicTab(tab)
-  local lowest,g=GV.lowestRank(),GV.guild()
-  local report=lowest and g and g.vaultView and g.vaultView[lowest]
-  return (report and report.tabs[tab]==true) and true or false
+-- The rank whose view decides what's shared: the guild's Rules setting, or the lowest rank.
+function GV.shareRank()
+  local lowest,rank=GV.lowestRank(),GV.rule('vaultRank')
+  if type(rank)~='number' or rank<0 or (lowest and rank>lowest) then return lowest end
+  return rank
 end
--- Forget any tab that isn't public (saved by an earlier version, or since restricted).
+-- A tab is shared when the share rank, or any rank below it, reported seeing it: sharing it shows nobody
+-- more than that rank could see in game.
+function GV.isSharedTab(tab)
+  local rank,g=GV.shareRank(),GV.guild()
+  if rank==nil or not g or not g.vaultView then return false end
+  for r,report in pairs(g.vaultView) do
+    if r>=rank and report.tabs[tab]==true then return true end
+  end
+  return false
+end
+-- Forget any tab that isn't shared (saved by an earlier version, since restricted, or the rule changed).
 function GV.pruneVault()
   local g=GV.guild()
-  if not g or GV.lowestRank()==nil then return end
+  if not g or GV.shareRank()==nil then return end
   for id in pairs(g.banks) do
     local tab=GV.isVault(id) and tonumber(id:match('%d+'))
-    if tab and not GV.isPublicTab(tab) then g.banks[id]=nil end
+    if tab and not GV.isSharedTab(tab) then g.banks[id]=nil end
+  end
+  for id in pairs(g.gold or {}) do
+    local tab=GV.isVault(id) and tonumber(id:match('%d+'))
+    if tab and not GV.isSharedTab(tab) then g.gold[id]=nil end
   end
 end
--- Public tabs we don't have yet: ask for them like a bank toon's contents.
+-- Shared tabs we don't have yet: ask for them like a bank toon's contents.
 function GV.askVault()
-  local g,lowest=GV.guild(),GV.lowestRank()
-  local report=g and lowest and g.vaultView and g.vaultView[lowest]
-  if not report then return end
-  for tab,visible in pairs(report.tabs) do
-    if visible and not g.banks['*vault'..tab] then GV.sendRequest('*vault'..tab) end
+  local g=GV.guild()
+  if not g or not g.vaultView then return end
+  local asked={}
+  for _,report in pairs(g.vaultView) do
+    for tab in pairs(report.tabs) do
+      if not asked[tab] and GV.isSharedTab(tab) and not g.banks['*vault'..tab] then asked[tab]=true; GV.sendRequest('*vault'..tab) end
+    end
   end
+end
+-- The share rank changed: drop what's no longer shared, fetch what now is, and share it if the bank is open.
+function GV.vaultRuleChanged()
+  GV.pruneVault()
+  GV.once('vault:ask',2,GV.askVault)
+  if vaultOpen then GV.schedule('vault',1,GV.scanVault) end
 end
 function GV.viewStamp()
   local newest=0
@@ -1675,10 +1735,7 @@ function GV.acceptView(by,rank,stamp,text)
   local tabs={}
   for tab,visible in text:gmatch('(%d+):([01])') do tabs[tonumber(tab)]=visible=='1' end
   g.vaultView[rank]={tabs=tabs,stamp=stamp,by=displayName(by)}
-  if rank==GV.lowestRank() then
-    GV.pruneVault()
-    GV.once('vault:ask',2,GV.askVault)
-  end
+  if rank>=(GV.shareRank() or rank) then GV.vaultRuleChanged() end
   requestUpdate()
 end
 function GV.onViewMessage(action,origin,rest,sender)
@@ -1720,7 +1777,7 @@ function API.Available(item)
   if not item or item<=0 or not GV.guild() then return 0,per end
   for _,bank in ipairs(GV.bankList()) do
     local n=GV.available(bank.id,item)
-    if n>0 then per[displayName(bank.name)]=n; total=total+n end
+    if n>0 then per[GV.bankTitle(bank.name)]=n; total=total+n end
   end
   return total,per
 end
@@ -2334,7 +2391,7 @@ function GV.refreshDonatePanel()
     end
     radio.id=bank.id
     radio:ClearAllPoints(); radio:SetPoint('TOPLEFT',20,y)
-    radio.label:SetText(displayName(bank.name)); radio:SetChecked(i==f.choice); radio:Show()
+    radio.label:SetText(GV.bankTitle(bank.name)); radio:SetChecked(i==f.choice); radio:Show()
     y=y-22
   end
   for i=#f.banks+1,#f.choices do f.choices[i]:Hide() end
@@ -2474,7 +2531,7 @@ function GV.itemRows(bankId,where,term,sort)
         if t and t.bags>0 then parts[#parts+1]=MUTED..'Bags|r '..t.bags end
         if t and t.bank>0 then parts[#parts+1]=MUTED..'Bank|r '..t.bank end
       else
-        for _,t in ipairs(e.toons) do parts[#parts+1]=MUTED..displayName(t.name)..'|r '..(t.bags+t.bank) end
+        for _,t in ipairs(e.toons) do parts[#parts+1]=MUTED..GV.bankTitle(t.name)..'|r '..(t.bags+t.bank) end
       end
       e.where=table.concat(parts,MUTED..'   ·   |r')
       shown[#shown+1]=e
@@ -2513,7 +2570,24 @@ function GV.buildItemsPage(page)
     row.bar:SetColorTexture(1,.82,0,.9)
     row.name=label(row,'GameFontHighlight'); row.name:SetPoint('TOPLEFT',12,-5); row.name:SetPoint('RIGHT',-4,0)
     row.detail=label(row,'GameFontHighlightSmall'); row.detail:SetPoint('BOTTOMLEFT',12,6); row.detail:SetPoint('RIGHT',-4,0)
-    row:SetScript('OnClick',function(self) db.ui.bank=self.entry.id; requestUpdate() end)
+    row:RegisterForClicks('LeftButtonUp','RightButtonUp')
+    row:SetScript('OnClick',function(self,mouse)
+      if mouse=='RightButton' then
+        if self.entry.id and GV.isOfficer(myId()) and StaticPopup_Show then
+          StaticPopup_Show('GUILDBANKTOONS_RENAME',displayName(self.entry.name),nil,{id=self.entry.id,label=GV.plan().labels[self.entry.id]})
+        end
+        return
+      end
+      db.ui.bank=self.entry.id; requestUpdate()
+    end)
+    row:SetScript('OnEnter',function(self)
+      if not (self.entry and self.entry.id and GV.isOfficer(myId())) then return end
+      GameTooltip:SetOwner(self,'ANCHOR_RIGHT')
+      GameTooltip:AddLine(displayName(self.entry.name))
+      GameTooltip:AddLine('Right-click to give it a name the guild sees.',.6,.6,.6)
+      GameTooltip:Show()
+    end)
+    row:SetScript('OnLeave',function() GameTooltip:Hide() end)
   end,function(row,toon)
     local on=db.ui.bank==toon.id
     row.selected:SetShown(on); row.bar:SetShown(on)
@@ -2558,7 +2632,7 @@ function GV.itemEntryTooltip(owner,e)
       if t.bags>0 then parts[#parts+1]='bags '..t.bags end
       if t.bank>0 then parts[#parts+1]='bank '..t.bank end
       if t.reserved>0 then parts[#parts+1]=ORANGE..t.reserved..' reserved|r' end
-      GameTooltip:AddDoubleLine(displayName(t.name),table.concat(parts,', '),1,.82,0,1,1,1)
+      GameTooltip:AddDoubleLine(GV.bankTitle(t.name),table.concat(parts,', '),1,.82,0,1,1,1)
     end
     if e.want then GameTooltip:AddDoubleLine('The guild wants',e.want..(e.short>0 and (ORANGE..' (need '..e.short..')|r') or ''),1,.82,0,1,1,1) end
     GameTooltip:AddLine('Click to request   ·   Shift-click to link'..(GV.isOfficer(myId()) and '   ·   Alt-click to set how many the guild wants' or ''),.6,.6,.6,true)
@@ -2605,7 +2679,7 @@ function GV.refreshItems()
   for _,bank in ipairs(banks) do
     local snap=g.banks[bank.id]
     if snap then gold=gold+(snap.gold or 0); withData=withData+1 end
-    toons[#toons+1]={id=bank.id,label=displayName(bank.name),
+    toons[#toons+1]={id=bank.id,label=GV.bankTitle(bank.name),name=bank.name,
       detail=snap and (GV.money(snap.gold or 0)..'  '..MUTED..ago(snap.stamp)..'|r') or (MUTED..'waiting for contents|r')}
   end
   if #banks>0 then
@@ -2629,7 +2703,8 @@ function GV.refreshItems()
     local notes={GV.money(snap.gold or 0),MUTED..'updated '..ago(snap.stamp)..(snap.via and (' via '..snap.via) or '')..'|r'}
     if (snap.bankStamp or 0)==0 then notes[#notes+1]=ORANGE..'bank not opened yet|r' end
     table.remove(notes,1)
-    ui.summary:SetText(displayName(snap.owner)..'   ·   '..table.concat(notes,'   ·   '))
+    local title=GV.bankTitle(snap.owner)
+    ui.summary:SetText(title..(title~=displayName(snap.owner) and (MUTED..'  ('..displayName(snap.owner)..')|r') or '')..'   ·   '..table.concat(notes,'   ·   '))
   elseif db.ui.bank then ui.summary:SetText('')
   else
     ui.summary:SetText(#list..(#list==1 and ' item' or ' items')..'   ·   '..withData..' of '..#banks..' bank toons reporting')
@@ -2718,7 +2793,7 @@ function GV.openRequestDialog(e)
     end
     radio.index=i
     radio:ClearAllPoints(); radio:SetPoint('TOPLEFT',22,y)
-    radio.label:SetText(displayName(t.name)..'   '..MUTED..t.available..(e.unit or '')..' available|r')
+    radio.label:SetText(GV.bankTitle(t.name)..'   '..MUTED..t.available..(e.unit or '')..' available|r')
     radio:Show()
     y=y-22
   end
@@ -2791,7 +2866,7 @@ function GV.drawRequestRow(row,q)
   if q.item and q.item>0 then quality,icon=select(3,GV.itemInfo(q.item)) end
   row.icon:SetTexture(q.item==0 and COIN_ICON or icon or QUESTION_ICON)
   row.name:SetText(GV.requestLabel(q,true)..(q.to and (MUTED..'  for |r'..displayName(q.to)) or '')); qualityColor(row.name,quality,not isActive(q))
-  local parts={displayName(q.by)..MUTED..' from |r'..displayName(q.bank),MUTED..ago(tonumber(q.id:match('%-(%d+)%-%d+$')) or q.updated)..'|r'}
+  local parts={displayName(q.by)..MUTED..' from |r'..GV.bankTitle(q.bank),MUTED..ago(tonumber(q.id:match('%-(%d+)%-%d+$')) or q.updated)..'|r'}
   if (q.note or '')~='' then parts[#parts+1]=MUTED..'"'..q.note..'"|r' end
   row.detail:SetText(table.concat(parts,MUTED..'   ·   |r'))
   local specs,me={},myId()
@@ -2968,10 +3043,17 @@ function GV.buildGMPage(page)
     row.name=label(row,'GameFontHighlight'); row.name:SetPoint('TOPLEFT',12,-4)
     row.detail=label(row,'GameFontHighlightSmall'); row.detail:SetPoint('BOTTOMLEFT',12,5)
     row.remove=button(row,'Remove',80); row.remove:SetHeight(20); row.remove:SetPoint('RIGHT',-8,0)
-    row.name:SetPoint('RIGHT',row.remove,'LEFT',-8,0); row.detail:SetPoint('RIGHT',row.remove,'LEFT',-8,0)
+    row.rename=button(row,'Rename',80); row.rename:SetHeight(20); row.rename:SetPoint('RIGHT',row.remove,'LEFT',-6,0)
+    row.name:SetPoint('RIGHT',row.rename,'LEFT',-8,0); row.detail:SetPoint('RIGHT',row.rename,'LEFT',-8,0)
     row.remove:SetScript('OnClick',function(self) GV.gmChange('remove',self:GetParent().entry.name) end)
+    row.rename:SetScript('OnClick',function(self)
+      local name=self:GetParent().entry.name
+      if StaticPopup_Show then StaticPopup_Show('GUILDBANKTOONS_RENAME',displayName(name),nil,{id=nameId(name),label=GV.plan().labels[nameId(name)]}) end
+    end)
   end,function(row,toon)
-    row.name:SetText(displayName(toon.name))
+    local title=GV.bankTitle(toon.name)
+    row.name:SetText(title..(title~=displayName(toon.name) and (MUTED..'  ('..displayName(toon.name)..')|r') or ''))
+    row.rename:SetShown(toon.canEdit)
     local snap=toon.snap
     row.detail:SetText(snap and (GV.money(snap.gold or 0)..'   '..MUTED..'·   updated '..ago(snap.stamp)..'|r')
       or (MUTED..'Waiting for this toon to log in with the addon and visit the banker.|r'))
@@ -2986,19 +3068,19 @@ function GV.refreshGM()
   local g=GV.guild()
   if not g then ui.gmInfo:SetText('Join a guild to manage its bank toons.'); ui.gmList:SetData({}); return end
   GV.readRoster()
-  local gm=GV.isGM(myId())
+  local gm=GV.isOfficer(myId())
   local set=g.managedStamp and ('Last changed by '..displayName(g.managedBy or '?')..', '..ago(g.managedStamp)..'.') or 'Nothing set yet.'
   if gm then
-    ui.gmInfo:SetText('You\'re the guild master. Toons you add here show up for everyone in the guild, including guildmates who log in while you\'re offline. '..MUTED..set..'|r')
+    ui.gmInfo:SetText('Toons you add here show up for everyone in the guild, including guildmates who log in while you\'re offline. Rename gives a bank a name the guild sees. '..MUTED..set..'|r')
   else
-    ui.gmInfo:SetText('Only the guild master can change this list; everyone in the guild sees it. '..MUTED..set..'|r')
+    ui.gmInfo:SetText('Only officers and the guild master can change this list; everyone in the guild sees it. '..MUTED..set..'|r')
   end
   ui.gmName:SetShown(gm); ui.gmAdd:SetShown(gm); ui.gmClear:SetShown(gm)
   local list={}
   for _,name in ipairs(GV.managedNames(g)) do list[#list+1]={name=name,snap=g.banks[nameId(name)],canEdit=gm} end
   ui.gmList:SetData(list)
   enable(ui.gmClear,#list>0)
-  ui.gmEmpty:SetText(#list==0 and (gm and 'Add the guild\'s first bank toon above. Then log in on it with the addon and visit the banker once.' or 'The guild master hasn\'t added any bank toons here yet.') or '')
+  ui.gmEmpty:SetText(#list==0 and (gm and 'Add the guild\'s first bank toon above. Then log in on it with the addon and visit the banker once.' or 'Officers haven\'t added any bank toons here yet.') or '')
   local tagged={}
   for id,name in pairs(g.tagged) do if not g.managed[id] then tagged[#tagged+1]=displayName(name) end end
   table.sort(tagged)
@@ -3080,7 +3162,7 @@ function GV.drawDonationRow(row,e)
   local item,icon=firstItem(e),nil
   if item then icon=select(4,GV.itemInfo(item)) end
   row.icon:SetTexture(item and (icon or QUESTION_ICON) or COIN_ICON)
-  row.name:SetText(displayName(e.from)..MUTED..'  to  |r'..displayName(e.to)); row.name:SetTextColor(1,1,1)
+  row.name:SetText(GV.bankTitle(e.from)..MUTED..'  to  |r'..GV.bankTitle(e.to)); row.name:SetTextColor(1,1,1)
   row.detail:SetText(GV.describeDonation(e,3))
   row.status:SetText(LEDGER_STATUS[e.status] or e.status)
   row.when:SetText(ago(e.when))
@@ -3153,7 +3235,7 @@ function GV.goalProgress(goal)
 end
 local function toonName(id)
   if not id or id=='*' then return 'All bank toons' end
-  for _,bank in ipairs(GV.bankList()) do if bank.id==id then return displayName(bank.name) end end
+  for _,bank in ipairs(GV.bankList()) do if bank.id==id then return GV.bankTitle(bank.name) end end
   return id
 end
 function GV.goalEntries()
@@ -3375,11 +3457,22 @@ function GV.buildRulesEditor(page)
   ui.ruleGold=GV.make('CheckButton',page,{'UICheckButtonTemplate','InterfaceOptionsCheckButtonTemplate'})
   ui.ruleGold:SetSize(26,26); ui.ruleGold:SetPoint('TOPLEFT',6,y)
   local caption=label(page,'GameFontHighlight'); caption:SetPoint('LEFT',ui.ruleGold,'RIGHT',4,1); caption:SetText('Members can request gold')
+  local share=label(page,'GameFontHighlight'); share:SetPoint('TOPLEFT',10,y-34); share:SetText('Share guild bank tabs that this rank can see')
+  ui.ruleVault=button(page,'Lowest rank',200); ui.ruleVault:SetPoint('TOPLEFT',290,y-30); ui.ruleVault.value=-1
+  ui.ruleVault:SetScript('OnClick',function(self)
+    local lowest=GV.lowestRank() or 0
+    self.value=(self.value>=lowest) and -1 or (self.value+1)
+    ui.rulesDirty=true; requestUpdate()
+  end)
+  local shareNote=label(page,'GameFontDisableSmall','LEFT',true); shareNote:SetPoint('TOPLEFT',10,y-51); shareNote:SetPoint('RIGHT',-24,0)
+  shareNote:SetText('Tabs this rank (or any lower one) can see go to the whole guild. Tabs only higher ranks can see are never shared, even when an officer opens the guild bank.')
+  y=y-62
   ui.ruleSave=button(page,'Save rules',120); ui.ruleSave:SetPoint('TOPLEFT',10,y-40)
   ui.ruleSave:SetScript('OnClick',function()
     local p=GV.copyPlan()
     for _,box in ipairs(ui.ruleBoxes) do p.rules[box.rule]=tonumber(box:GetText() or '') or 0 end
     p.rules.gold=ui.ruleGold:GetChecked() and 1 or 0
+    p.rules.vaultRank=ui.ruleVault.value
     if GV.setPlan(p) then ui.rulesDirty=false; log('Saved the guild\'s request rules.',true) end
   end)
   for _,box in ipairs(ui.ruleBoxes) do box:HookScript('OnTextChanged',function(_,user) if user then ui.rulesDirty=true end end) end
@@ -3389,7 +3482,10 @@ function GV.refreshRulesEditor()
   readOnly(ui.ruleInfo)
   local edit=canPlan()
   ui.ruleSave:SetShown(edit)
-  if edit then ui.ruleGold:Enable() else ui.ruleGold:Disable() end
+  if edit then ui.ruleGold:Enable(); ui.ruleVault:Enable() else ui.ruleGold:Disable(); ui.ruleVault:Disable() end
+  if not ui.rulesDirty then ui.ruleVault.value=GV.rule('vaultRank') end
+  local v=ui.ruleVault.value
+  ui.ruleVault:SetText(v<0 and ('Lowest rank ('..GV.rankName(GV.lowestRank())..')') or GV.rankName(v))
   -- Don't overwrite what an officer is typing.
   if ui.rulesDirty then return end
   for _,box in ipairs(ui.ruleBoxes) do
@@ -3445,7 +3541,7 @@ function GV.exportText(kind,format)
     local wants=GV.plan().wants
     if csv then
       local head={'Item ID','Item','Quality','Available','Reserved','Total'}
-      for _,bank in ipairs(banks) do head[#head+1]=displayName(bank.name) end
+      for _,bank in ipairs(banks) do head[#head+1]=GV.bankTitle(bank.name) end
       head[#head+1]='Guild wants'
       lines[1]=csvLine(head)
       for _,e in ipairs(rows) do
@@ -3485,7 +3581,7 @@ function GV.exportText(kind,format)
     local total=GV.goldSeries(90,'*')
     if csv then
       local head={'Date'}
-      for _,bank in ipairs(banks) do head[#head+1]=displayName(bank.name) end
+      for _,bank in ipairs(banks) do head[#head+1]=GV.bankTitle(bank.name) end
       head[#head+1]='Total'
       lines[1]=csvLine(head)
     end
@@ -3956,7 +4052,7 @@ SlashCmdList.GUILDBANKTOONS=function(input)
     db.settings.quiet=not db.settings.quiet
     log('Quiet mode '..(db.settings.quiet and 'on' or 'off')..'.',true)
   else
-    log('Everything is in the window: /gbt opens it, /gbt settings and /gbt gm jump to those tabs. Also: sync asks for the latest contents; status lists bank characters; bank add/remove/clear Name sets the guild\'s bank characters (guild master); requests lists requests; request [item] 20 note asks for something; approve/deny/mailed/cancel N updates one; mail N fills a mail at a mailbox; mailhelper and autofill toggle the mail helper; add/remove Name follows a bank character just for you; tag Name prints the guild info tag; whispers, companion, tooltips and quiet toggle those.',true)
+    log('Everything is in the window: /gbt opens it, /gbt settings and /gbt gm jump to those tabs. Also: sync asks for the latest contents; status lists bank characters; bank add/remove/clear Name sets the guild\'s bank characters (officers); requests lists requests; request [item] 20 note asks for something; approve/deny/mailed/cancel N updates one; mail N fills a mail at a mailbox; mailhelper and autofill toggle the mail helper; add/remove Name follows a bank character just for you; tag Name prints the guild info tag; whispers, companion, tooltips and quiet toggle those.',true)
   end
 end
 

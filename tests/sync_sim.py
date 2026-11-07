@@ -310,7 +310,7 @@ def managed(c):
     return sorted(g.managed.keys()) if g.managed else []
 gm.login(); bus.run(20)
 slash(m1,'bank add Coin Purse'); bus.run(5)
-check('a member cannot set guild bank characters', managed(officer)==[] and any('Only the guild master' in l for l in m1.logs))
+check('a member cannot set guild bank characters', managed(officer)==[] and any('Only officers and the guild master' in l for l in m1.logs))
 slash(gm,'bank add Coin Purse'); slash(gm,'bank add Spare Change'); bus.run(10)
 check('guild master\'s bank list reaches everyone online', all(managed(c)==['coinpurse','sparechange'] for c in (m1,m2,officer,bank)))
 purse.env.gold=12345; purse.setbags([[2592,7]],bank=[[2770,40]])
@@ -533,6 +533,22 @@ purse.logout(); bus.run(2); purse.saved.guilds["Verdant"].vaultView=None; purse.
 purse.login(); bus.run(30)
 check('guildmates who missed it get the public tabs when they log in', tabs_of(purse)==['*vault1'] and vk(purse)['*vault1'].bank[2770]==200)
 
+# --- officers choose the share rank, set up bank toons and name banks ---
+officer.L.execute('local p=GuildBankToons.copyPlan(); p.rules.vaultRank=1; GuildBankToons.setPlan(p)'); bus.run(10)
+officer.fire('GUILDBANKFRAME_OPENED'); bus.run(5); officer.fire('GUILDBANKFRAME_CLOSED'); bus.run(15)
+check('with the share rank set to officers, the officer tab is shared', tabs_of(m1)==['*vault1','*vault2'] and API(m1).Available(19019)[0]==1)
+officer.L.execute('local p=GuildBankToons.copyPlan(); p.rules.vaultRank=-1; GuildBankToons.setPlan(p)'); bus.run(10)
+check('setting it back to the lowest rank takes the officer tab away from everyone', tabs_of(m1)==['*vault1'] and vk(m1)['*vault2'] is None and vk(officer)['*vault2'] is None)
+GBT(officer).gmChange('add','Penny Jar'); bus.run(8)
+check('officers can add bank toons', 'pennyjar' in managed(m1))
+GBT(officer).gmChange('remove','Penny Jar'); bus.run(8)
+check('officers can remove bank toons', 'pennyjar' not in managed(m1))
+GBT(officer).setBankLabel('vaultkeeper','Mats & Herbs'); GBT(officer).setBankLabel('*vault1','Crafting mats'); bus.run(8)
+check('officers can name banks for the guild', GBT(m1).bankTitle('Vault Keeper')=='Mats & Herbs' and GBT(m1).bankTitle('*vault1:Mats')=='Crafting mats')
+check('bank names show where the bank is listed', 'Mats & Herbs' in API(m1).Available(2589)[1] and any('Mats & Herbs' in r.where for r in GBT(m1).itemRows(None,'all','','name').values()))
+GBT(m1).setBankLabel('vaultkeeper','Mine now'); bus.run(5)
+check('members cannot rename banks', GBT(m2).bankTitle('Vault Keeper')=='Mats & Herbs')
+
 # --- the Discord companion reads what the game saved ---
 import subprocess, tempfile, os, json as _json
 m1.L.execute(r"""
@@ -559,7 +575,8 @@ comp=os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])),'..','companion'
 dry=subprocess.run([sys.executable,comp,'--dry-run','--force','--savedvars',sv],capture_output=True,text=True,cwd=tmp)
 check('companion dry run reads the save and builds the goals message', dry.returncode==0 and 'Gold goals' in dry.stdout and 'Raid fund' in dry.stdout and 'What the guild needs' in dry.stdout)
 check('companion thanks donors', 'donated' in dry.stdout and 'Thank you!' in dry.stdout)
-check('companion posts guild bank tabs and craft orders', 'Guild Bank - Mats' in dry.stdout and 'craft order' in dry.stdout)
+check('companion posts guild bank tabs and craft orders', 'Crafting mats' in dry.stdout and 'craft order' in dry.stdout)
+check('companion uses the names officers gave the banks', 'Mats & Herbs' in dry.stdout)
 check('the saved file holds no restricted tab, so the companion has none to post', '"*vault2"' not in m1.L.globals().SAVED and 'Guild Bank - Officers' not in dry.stdout)
 exp=subprocess.run([sys.executable,comp,'--savedvars',sv,'--export',os.path.join(tmp,'out')],capture_output=True,text=True,cwd=tmp,
                    env={k:v for k,v in os.environ.items() if k!='GUILDBANKTOONS_WEBHOOK'})

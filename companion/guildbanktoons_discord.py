@@ -216,12 +216,21 @@ def money(copper):
 
 
 def vault_public(guild, tab):
-    """Whether guild bank tab `tab` is public: the lowest rank that reported seeing the guild bank could see it.
-    The addon only saves public tabs; this is a second check before anything goes to Discord or a file."""
+    """Whether guild bank tab `tab` is shared: the rank officers chose (Rules: vaultRank; the lowest reported rank
+    by default), or a lower one, reported seeing it. The addon only saves shared tabs; this is a second check
+    before anything goes to Discord or a file."""
     views = {int(r): v for r, v in (guild.get("vaultView") or {}).items()}
     if not views:
         return False
-    return bool(((views[max(views)] or {}).get("tabs") or {}).get(tab))
+    rank = int(((guild.get("plan") or {}).get("rules") or {}).get("vaultRank", -1))
+    if rank < 0 or rank > max(views):
+        rank = max(views)
+    return any(r >= rank and ((v.get("tabs") or {}).get(tab)) for r, v in views.items())
+
+
+def bank_title(guild, name):
+    """A bank's name as the guild shows it: the display name officers gave it, else the toon's or tab's name."""
+    return ((guild.get("plan") or {}).get("labels") or {}).get(name_id(name)) or short(name)
 
 
 def designated(guild):
@@ -262,13 +271,13 @@ def fit(lines, limit):
     return "\n".join(out) or "Empty."
 
 
-def build_message(guild_name, snap, names, link_base, reserved=None):
+def build_message(guild_name, snap, names, link_base, reserved=None, title=None):
     owner = snap.get("owner", "?")
     stamp = int(snap.get("stamp") or 0)
     bank_stamp = int(snap.get("bankStamp") or 0)
     footer = "Guild Bank Toons snapshot" + (f" via {snap['via']}" if snap.get("via") else " from the bank character")
     summary = {
-        "title": f"🏦 {short(owner)}",
+        "title": f"🏦 {title or short(owner)}" + (f" ({short(owner)})" if title and title != short(owner) else ""),
         "description": f"**Gold:** {money(snap.get('gold'))}\n**Guild:** {guild_name}"
                        + ("" if bank_stamp else "\n_Bank not opened yet on this character._"),
         "color": 0xD8AA55,
@@ -539,7 +548,7 @@ def export_csv(data, folder, guild_filter=None):
     for guild_name, guild in guilds:
         prefix = "" if len(guilds) == 1 else re.sub(r"[^A-Za-z0-9]+", "_", guild_name) + "_"
         banks, bank_ids = guild.get("banks") or {}, list(designated(guild))
-        toon_names = [short((banks.get(b) or {}).get("owner") or designated(guild)[b]) for b in bank_ids]
+        toon_names = [bank_title(guild, (banks.get(b) or {}).get("owner") or designated(guild)[b]) for b in bank_ids]
         reserved, wants = reserved_by_bank(guild), (guild.get("plan") or {}).get("wants") or {}
         rows = {}
         for col, bank_id in enumerate(bank_ids):
@@ -649,15 +658,16 @@ def run_once(args, state):
             slot = f"{guild_name}|{bank_id}"
             seen = state.setdefault(slot, {})
             held = {str(k): v for k, v in sorted(reserved.get(bank_id, {}).items())}
+            title = bank_title(guild, snap.get("owner"))
             if (not args.force and seen.get("stamp") == snap.get("stamp") and seen.get("hash") == snap.get("hash")
-                    and seen.get("reserved", {}) == held):
+                    and seen.get("reserved", {}) == held and seen.get("title", title) == title):
                 continue
-            payload = build_message(guild_name, snap, names, args.link_base, reserved.get(bank_id))
+            payload = build_message(guild_name, snap, names, args.link_base, reserved.get(bank_id), title)
             if args.dry_run:
                 print(json.dumps(payload, indent=2, ensure_ascii=False))
                 continue
             seen["message"] = publish(args.webhook, seen.get("message"), payload)
-            seen["stamp"], seen["hash"], seen["reserved"] = snap.get("stamp"), snap.get("hash"), held
+            seen["stamp"], seen["hash"], seen["reserved"], seen["title"] = snap.get("stamp"), snap.get("hash"), held, title
             changed += 1
             print(f"Updated Discord for {snap.get('owner')} ({guild_name}).")
             time.sleep(1)  # stay well inside the webhook rate limit

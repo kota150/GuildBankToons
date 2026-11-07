@@ -9,6 +9,8 @@
 - On Classic Era, guilds with the same name on different realms no longer share data. On Forever guilds stay keyed by name, since guildmates report different realms; saved data moves to the right key automatically.
 
 ### Added
+- Officers (not just the guild master) can add and remove bank toons, and can give any bank toon or guild bank tab a name the guild sees, in the window, tooltips, requests and on Discord.
+- Officers choose which rank's view of the guild bank is shared (Rules); the lowest rank by default. Tabs only higher ranks can see are never shared.
 - Only public guild bank tabs are shared: the ones the guild's lowest rank can see. Restricted tabs never leave the game of whoever opened them (not sent, saved, posted or exported), even for officers and the guild master.
 - Forever's guild bank: whoever opens it shares its public tabs, which then count everywhere (totals, Needs, gold goals, Discord, export). Members can request from it; officers mail those.
 - Requests can hold several items (one approval, one mail) and can be craft orders, mailed to a crafter who's told what to make and for whom.

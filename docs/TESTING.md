@@ -45,6 +45,8 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 - [ ] As an officer, open the guild bank before anyone of the lowest rank has: nothing from it is shared yet.
 - [ ] As a member of the lowest rank, open the guild bank and close it. Within a few seconds, guildmates see each public tab in the Bank tab's sidebar ("Guild Bank - <tab name>"), with the right items, and the guild bank's gold on the Goals tab.
 - [ ] As an officer, open the guild bank again: an officer-only tab doesn't appear for anyone (not even the officer), and `/gbt status` doesn't list it.
+- [ ] Guild tab → Rules: set *Share guild bank tabs that this rank can see* to an officer rank and save. Open the guild bank as an officer: the officer tab appears for everyone. Set it back to the lowest rank: it disappears for everyone.
+- [ ] As an officer, add and rename a bank toon on the Guild tab, and right-click a guild bank tab in the Bank tab's sidebar to rename it. Guildmates see the new names; a member can't rename.
 - [ ] Request an item from a guild bank tab. An officer approves it, takes it out, and at a mailbox the mail helper lists it; sending marks it mailed.
 - [ ] With GuildForge installed: request materials for a recipe as a craft order to a crafter. The bank toon's mail goes to the crafter with every item; the crafter is told to craft it and mail it to you.
 
