@@ -155,6 +155,8 @@ The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/Guild
 
 ## Installing
 
+Install it from **CurseForge** (the CurseForge app picks the right version for WoW Forever, Classic Era or Retail), or by hand:
+
 1. Copy the `GuildBankToons` folder into your AddOns folder (the folder keeps that short name; the game lists it as *Forever - Guild Bank Toons*):
    - **WoW Forever**: `World of Warcraft/_forever_/Interface/AddOns/GuildBankToons`
    - Classic Era: `World of Warcraft/_classic_era_/Interface/AddOns/GuildBankToons`
@@ -174,7 +176,7 @@ The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/Guild
 **Also loads on**, with less testing:
 
 - **Classic Era** (`GuildBankToons_Vanilla.toc`, interface 11509). Realms are ignored there too, so two guildmates with the same name on different connected realms would count as one.
-- **Retail** (`GuildBankToons_Mainline.toc`, Midnight interface 120000–120007), handy for previewing the window. If it's flagged out of date, tick *Load out of date AddOns*.
+- **Retail** (`GuildBankToons_Mainline.toc`, interface 120107 and 120105). If it's flagged out of date, tick *Load out of date AddOns*.
 
 The bank scan covers both the Classic bank layout and modern bank tabs; containers a client doesn't have are skipped.
 
@@ -192,6 +194,19 @@ Other addons (GuildForge, for crafting materials) can use the guild bank through
 | `RegisterCallback(fn)` | Calls `fn()` whenever the bank, requests or plan change |
 
 An addon that uses it should list `## OptionalDeps: GuildBankToons` in its TOC so it loads after this one, and hide anything that depends on it when `GuildBankToonsAPI` is missing or `HasBank()` is false.
+
+## Releasing
+
+Same as the author's other addons: push a version tag and the GitHub Actions workflow (`.github/workflows/release.yml`) builds `GuildBankToons.zip` with the BigWigs packager, using `.pkgmeta` (which leaves out `docs`, `tests`, `companion` and other repo-only files) and the matching `CHANGELOG.md` section as release notes.
+
+```bash
+git tag v1.0.0
+```
+```bash
+git push origin main v1.0.0
+```
+
+It always creates a GitHub release with the ZIP. It also uploads to CurseForge once the repository has a `CF_API_KEY` secret and the TOCs have `## X-Curse-Project-ID:` set. `CURSEFORGE.md` is the project description to paste into CurseForge.
 
 ## Development
 

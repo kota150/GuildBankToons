@@ -1,4 +1,4 @@
-# Build settings for the BigWigs packager.
+# Build settings for the BigWigs packager (used by the release workflow).
 package-as: GuildBankToons
 
 manual-changelog:
@@ -7,6 +7,10 @@ manual-changelog:
 
 # Repo-only files that don't belong in the addon download
 ignore:
-  - companion
+  - docs
   - tests
+  - companion
   - README.md
+  - CURSEFORGE.md
+  - .github
+  - .gitattributes

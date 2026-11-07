@@ -1,0 +1,24 @@
+name: Feature idea
+description: Suggest something new for Guild Bank Toons
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would it help your guild?
+      description: What are you trying to do in game that this would make easier?
+  - type: dropdown
+    id: game
+    attributes:
+      label: Which game version do you play?
+      multiple: true
+      options:
+        - WoW Forever
+        - Classic Era (Vanilla, Hardcore, Season of Discovery)
+        - Retail

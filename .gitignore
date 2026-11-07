@@ -2,11 +2,23 @@
 .DS_Store
 ._*
 
-# Companion secrets and state
-companion/guildbanktoons.json
-companion/.guildbanktoons_state.json
-__pycache__/
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
 
 # Release builds
 *.zip
 .release/
+
+# Test runner environment
+.venv/
+__pycache__/
+
+# Discord companion settings (has the webhook URL) and state
+companion/guildbanktoons.json
+companion/.guildbanktoons_state.json

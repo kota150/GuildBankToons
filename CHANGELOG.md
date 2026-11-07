@@ -1,37 +1,44 @@
-# Changelog: Forever - Guild Bank Toons
+# Changelog
 
-## [Unreleased]
+All notable changes to Guild Bank Toons are listed here.
 
-### Fixed
-- The minimap button lines up with other addons' buttons: it joins LibDBIcon when another addon has loaded it, and otherwise uses LibDBIcon's ring and sizes and follows square and corner-shaped minimaps (it used to float off the edge of a square minimap).
-- Alts with the same first name could be taken for each other for a moment at login, and an alt could briefly publish its bags as a bank toon's. Characters are now told apart by their character ID, and nothing is published for a bank toon until the character's full name is confirmed.
-- WoW Forever names written as "First-Surname" (and with another ruleset's realm added, like "-CAMWOWUS2Realm2PvE") were cut down to the first name, so two characters sharing a first name were treated as one. Names are now read as first name and surname in every form, the same way GuildForge does, and your own surname comes straight from the game at login. The Discord companion reads them the same way.
-- On Classic Era, guilds with the same name on different realms no longer share data. On Forever guilds stay keyed by name, since guildmates report different realms; saved data moves to the right key automatically.
+## [1.0.0] - 2026-11-07
 
-### Added
-- Officers (not just the guild master) can add and remove bank toons, and can give any bank toon or guild bank tab a name the guild sees, in the window, tooltips, requests and on Discord.
-- Officers choose which rank's view of the guild bank is shared (Rules); the lowest rank by default. Tabs only higher ranks can see are never shared.
-- Only public guild bank tabs are shared: the ones the guild's lowest rank can see. Restricted tabs never leave the game of whoever opened them (not sent, saved, posted or exported), even for officers and the guild master.
-- Forever's guild bank: whoever opens it shares its public tabs, which then count everywhere (totals, Needs, gold goals, Discord, export). Members can request from it; officers mail those.
-- Requests can hold several items (one approval, one mail) and can be craft orders, mailed to a crafter who's told what to make and for whom.
-- `GuildBankToonsAPI` for other addons such as GuildForge: what the bank has, making requests and craft orders, opening the window, and a change callback.
-- Gold goals with a Goals tab: a bar chart of the guild bank's gold over 30 or 90 days with goal lines, progress bars, and the week's change. Goals also show on Discord.
-- Needs: officers set target amounts for items. The Bank tab's Needs view, the Donate panel's Add needed items button, and low-stock alerts for officers use them.
-- Request rules set by officers: a daily item limit per member, automatic approval of small requests for chosen ranks, and gold requests (with the mail helper filling in the gold).
-- Ledger tab (was Donations): donations, moves between bank toons, and mailed-out requests as withdrawals.
-- Export window for the inventory, ledger and gold history as CSV or text, ready to copy.
-- Bank toons send only what changed when a change is small; guildmates missing the base copy ask for the whole thing.
-- Discord companion: a self-updating goals message (gold, trend, goals, needs, top donors), a thank-you post per received donation, and `--export` to write CSV files.
-- Catching up asks one guildmate: those with newer copies send a one-line offer, and after 5 seconds the client asks only the one with the newest copy, falling back to the next newest if they don't start within 2 seconds. Sending is paced to the game's addon-message limit, with short messages ahead of long transfers.
-- Donations by mail: a Donate panel beside the mail window fills in a donation to a bank toon, and a public Donations tab logs every donation. The bank toon confirms each one when it opens its mailbox, and also logs mail from guildmates without the addon.
-- Bank tab laid out like a bag: item slots with icons, quality borders and counts, gold along the bottom, and a List view for each toon's share.
-- Built around WoW Forever: the default TOC targets Forever (interface 16001), and trial accounts, which Forever blocks from sending addon messages, get a clear browse-only mode.
-- First version: shares designated bank characters' bags, bank and gold over guild addon chat, with guildmates relaying copies so the bank stays visible while the bank character is offline.
-- Guild-wide bank characters set by the guild master (up to 20). The list syncs to every guildmate and is relayed while the guild master is offline; guild info tags and personal follows still work alongside it.
-- Window with game-style tabs along the bottom: Bank, Requests, Settings and Guild Master. Resizable and scalable, and it remembers its place. Opens from a minimap button, the AddOns menu, Options → AddOns, or `/gbt`.
-- Bank tab: bank toons in a sidebar, items totalled across toons with each toon's share shown, search, Bags/Bank filters and sorting. Item tooltips show guild bank counts anywhere in the game.
-- Request dialog: click an item, pick the toon, amount and note.
-- Settings tab for every option, and a Guild Master tab to add and remove the guild's bank toons without slash commands.
-- Requests: Ctrl-click an item (or `/gbt request`) to ask for it. Officers, the guild master and bank characters approve or deny; approvers with the addon get an alert, officers without it get a whisper. Approved items are reserved (taken off the available counts) until the bank character mails them, which closes the request. Requests sync to guildmates who log in later.
-- Mail helper for bank characters: lists approved requests at the mailbox, fills in the recipient, subject and note, and attaches the exact count from your bags. Sending the mail marks the request mailed.
-- Discord companion script that posts each bank character to a webhook message and keeps it updated, plus one message per request that can ping an officer role, a separate approval ping for whoever mails, and a strike-through once it's mailed, denied or cancelled.
+First release. Built for **WoW Forever**; also runs on Classic Era and Retail.
+
+### The guild bank, shared
+- **Bank toons:** the guild master or an officer adds the guild's bank characters on the Guild tab (up to 20). Their bags, bank and gold go to every guildmate running the addon, and guildmates pass them along, so the bank stays browsable while the bank toons are offline.
+- **Forever's guild bank:** whoever opens it shares the tabs a chosen rank can see (the lowest rank by default, set by officers under Rules). Tabs only higher ranks can see never leave the game of whoever opened them.
+- **Bank names:** officers can give any bank toon or guild bank tab a name the guild sees.
+- **Item tooltips** show guild bank counts anywhere in the game.
+
+### The window
+- Game-style tabs along the bottom: **Bank**, **Requests**, **Ledger**, **Goals**, **Settings** and **Guild**. Resizable and scalable, and it remembers its place. Opens from the minimap button, the AddOns menu, Options → AddOns or `/gbt`.
+- **Bank tab:** bank toons and guild bank tabs down the side, items laid out like a bag (icons, quality borders, counts), totals across toons with each toon's share on hover or in the List view, search, Bags / Bank / Needs filters, sorting, gold along the bottom.
+- **Export** the inventory, ledger or gold history as CSV or text, ready to copy.
+- The minimap button lines up with other addons' buttons (it joins LibDBIcon when another addon has loaded it) and follows square minimaps.
+
+### Requests
+- Click an item to request it: pick the bank toon, how many and a note. Officers, the guild master and bank toons approve or deny; approvers with the addon get an alert, officers without it get a whisper.
+- Approved items are reserved until mailed. At the mailbox, the bank toon's **mail helper** fills in the mail and attaches exactly the right count; sending it marks the request mailed.
+- **Gold requests**, and requests for **several items** in one mail.
+- **Craft orders:** the bank mails the materials to a crafter, who's told what to make and for whom.
+- **Rules** set by officers: a daily item limit per member, and automatic approval of small requests for chosen ranks.
+
+### Donations and the ledger
+- A **Donate** panel beside the mail window fills in a donation to a bank toon; **Add needed items** attaches anything the guild needs from your bags.
+- The bank toon confirms each donation when it opens its mailbox, and also logs mail from guildmates without the addon.
+- The **Ledger** is the public record: donations in, mailed-out requests, and moves between bank toons.
+
+### Goals and needs
+- **Gold goals** with a chart of the guild bank's gold over 30 or 90 days, goal lines, progress bars and the week's change.
+- **Needs:** officers set target amounts for items; they show in the Bank tab's Needs view, in the Donate panel, and as low-stock alerts for officers.
+
+### Discord companion (optional, not part of the addon download)
+- A Python script that keeps one Discord message per bank toon up to date, posts requests (with optional role pings), thanks donors, keeps a goals message current (gold trend, goals, needs, top donors), and can write CSV files.
+
+### Built for WoW Forever
+- Reads Forever names as first name and surname in every form the game writes them, ignores realms, and tells your alts apart.
+- Syncs politely: guildmates offer what they have and only one sends it, at the game's addon-message pace, holding messages while the game blocks addon chat.
+- Trial accounts, which Forever blocks from sending addon messages, get a browse-only mode.
+- **For other addons:** `GuildBankToonsAPI` lets addons such as GuildForge show guild bank stock and request materials.

@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in Guild Bank Toons isn't working right
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! The details below help track the problem down quickly.
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game version
+      options:
+        - WoW Forever
+        - Classic Era (Vanilla, Hardcore, Season of Discovery)
+        - Retail
+    validations:
+      required: true
+  - type: input
+    id: addon-version
+    attributes:
+      label: Guild Bank Toons version
+      description: Shown in the AddOns list on the character select screen, on CurseForge, or by /gbt status.
+      placeholder: "1.0.0"
+  - type: dropdown
+    id: role
+    attributes:
+      label: Who were you playing?
+      options:
+        - A bank toon
+        - An officer or the guild master
+        - A guild member
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, and what went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: /gbt status
+      description: Type /gbt status in game and paste what it prints. It shows your name, guild and message counts.
+      render: text
+  - type: textarea
+    id: lua-error
+    attributes:
+      label: Lua error (if any)
+      description: >
+        If the game showed an error, paste the full text here. To see errors, type
+        /console scriptErrors 1 in chat, or use an addon like BugSack.
+      render: text
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Drag images here if they help show the problem.

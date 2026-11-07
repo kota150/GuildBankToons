@@ -1,0 +1,25 @@
+# Builds GuildBankToons.zip and publishes it whenever a version tag (like v1.2.0) is pushed.
+# Uploads to CurseForge once the CF_API_KEY secret and the TOC's X-Curse-Project-ID are set;
+# until then it still creates a GitHub release with the ZIP attached.
+name: Package and release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CF_API_KEY: ${{ secrets.CF_API_KEY }}
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: BigWigsMods/packager@v2
