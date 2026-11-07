@@ -25,8 +25,9 @@ Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 - The bank toon's **mail helper** fills in the mail and attaches exactly the right count. Sending it closes the request.
 - Ask for **gold**, or **several items in one mail**.
 
-<!-- Add the Requests screenshot once it's saved as docs/screenshots/requests.png:
-![Requests waiting for approval](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/requests.png) -->
+![Asking for an item: pick the bank toon, how many, and a note](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/request-dialog.png)
+
+![Requests waiting for an officer to approve or deny](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/requests.png)
 - **Craft orders:** the bank mails the materials straight to a crafter. Works with [GuildForge](https://github.com/TheFrosty02/GuildForge), which adds "Get mats from guild bank" to its recipes.
 
 ## Donate by mail
@@ -37,6 +38,8 @@ Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 ## A ledger of what really moved
 
 The **Ledger** shows everything that came in and went out: what bank toons mail and receive, and the deposits and withdrawals (items and gold) from the guild bank's own log, for the tabs the guild shares.
+
+![The Ledger: what came in and went out](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/ledger.png)
 
 ## Goals, needs and rules
 
