@@ -641,7 +641,15 @@ def load_json(path, default):
 def run_once(args, state):
     path = args.savedvars or (find_saved_variables(args.wow_dir, args.account) or [None])[0]
     if not path or not os.path.exists(path):
-        sys.exit("Couldn't find GuildBankToons.lua in SavedVariables. Pass --savedvars or --wow-dir.")
+        # Say exactly what was tried, and whether the settings file was read at all.
+        settings = (f"Settings read from {CONFIG_PATH}." if os.path.exists(CONFIG_PATH)
+                    else f"No settings file at {CONFIG_PATH} (copy guildbanktoons.example.json to that name).")
+        if args.savedvars:
+            tried = f"There's no file at the savedvars path:\n  {args.savedvars}"
+        else:
+            dirs = [args.wow_dir] if args.wow_dir else DEFAULT_WOW_DIRS
+            tried = "Looked for _forever_/WTF/Account/*/SavedVariables/GuildBankToons.lua (or _classic_era_) under:\n  " + "\n  ".join(dirs)
+        sys.exit(f"Couldn't find GuildBankToons.lua.\n{tried}\n{settings}\nSet \"savedvars\" to the file's full path, or pass --savedvars.")
     data = load_saved_variables(path).get("GuildBankToonsDB") or {}
     names = data.get("items") or {}
     changed = 0

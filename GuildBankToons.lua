@@ -282,9 +282,15 @@ function GV.bankList()
   end)
   return list
 end
+-- Forever blocks GetGuildInfoText in combat, and every block counts against us under "Interface actions
+-- failed". Read the guild info out of combat only (again when combat ends), and stop if it's blocked even then.
+function GV.tagsReadable()
+  return GetGuildText and not GV.tagsBlocked
+end
 function GV.readTags()
   local g=GV.guild()
-  if not g or not GetGuildText then return end
+  if not g or not GV.tagsReadable() then return end
+  if InCombatLockdown and InCombatLockdown() then GV.tagsAfterCombat=true; return end
   local text=GetGuildText()
   -- An empty guild info usually means the roster hasn't loaded yet; keep what we knew.
   if type(text)~='string' or isSecret(text) or text=='' then return end
@@ -449,6 +455,24 @@ function GV.note(text)
   local stamp=(date and date('%H:%M:%S')) or tostring(math.floor(GetTime()))
   GV.trace[#GV.trace+1]=stamp..'  '..tostring(text)
   if #GV.trace>300 then table.remove(GV.trace,1) end
+end
+-- The game counts "Interface actions failed because of this AddOn" without saying what failed; keep the
+-- function it blocked (and whether we were in combat) in the message log, and say so once per function.
+GV.blocked={}
+function GV.actionBlocked(event,addon,fn)
+  if addon~=addonName then return end
+  fn=tostring(fn or '?')
+  local combat=InCombatLockdown and InCombatLockdown()
+  GV.blocked[fn]=(GV.blocked[fn] or 0)+1
+  GV.note('BLOCKED by the game ('..event..'): '..fn..(combat and ' in combat' or ''))
+  -- Reading the guild info: expected on clients that protect it, and we stop asking. Nothing to tell the player.
+  if fn:find('GuildText') or fn:find('GuildInfoText') then
+    if not combat then GV.tagsBlocked=true end
+    return
+  end
+  if GV.blocked[fn]==1 then
+    log('The game blocked '..fn..(combat and ' (in combat)' or '')..'. If you report it, include what you were doing and /gbt log.',true)
+  end
 end
 function GV.reject(reason)
   rejected=rejected+1
@@ -3266,7 +3290,7 @@ function GV.refreshGM()
   local tagged={}
   for id,name in pairs(g.tagged) do if not g.managed[id] then tagged[#tagged+1]=displayName(name) end end
   table.sort(tagged)
-  local footer='Officers (ranks 0-'..(g.officerRank or 1)..') approve requests; add [GBT:officers=N] to the guild info to change that.'
+  local footer='Officers (ranks 0-'..(g.officerRank or 1)..') approve requests'..(GV.tagsReadable() and '; add [GBT:officers=N] to the guild info to change that.' or '.')
   if #tagged>0 then footer='Also from the guild info: '..table.concat(tagged,', ')..'.   '..footer end
   ui.gmFooter:SetText(footer)
 end
@@ -4190,6 +4214,7 @@ function GV.debugLines()
     end
     if #GV.bankList()==0 then lines[#lines+1]='bank: NO BANK TOONS SET UP in this guild yet (Guild tab, or the bank list from an officer hasn\'t arrived)' end
   end
+  for fn,n in pairs(GV.blocked) do lines[#lines+1]='blocked by the game: '..fn..' x'..n end
   return lines
 end
 function GV.debug()
@@ -4235,6 +4260,8 @@ SlashCmdList.GUILDBANKTOONS=function(input)
   elseif command=='goals' then GV.open('goals')
   elseif command=='export' then GV.openExport(arg~='' and arg or nil)
   elseif command=='bank' or command=='banks' then GV.bankCommand(arg)
+  elseif command=='tag' and not GV.tagsReadable() then
+    log('This version of the game doesn\'t let addons read the guild info. Add bank toons on the Guild tab instead.',true)
   elseif command=='tag' then
     log('Add this to the guild info (Guild > Guild Information): |cffffd100[GBT:'..(arg~='' and arg or key())..']|r',true)
   elseif command=='requests' then
@@ -4301,7 +4328,8 @@ for _,event in ipairs({'ADDON_LOADED','PLAYER_LOGIN','PLAYER_LOGOUT','PLAYER_GUI
   'BAG_UPDATE_DELAYED','PLAYER_MONEY','BANKFRAME_OPENED','BANKFRAME_CLOSED','PLAYERBANKSLOTS_CHANGED',
   'PLAYER_INTERACTION_MANAGER_FRAME_SHOW','PLAYER_INTERACTION_MANAGER_FRAME_HIDE','GET_ITEM_INFO_RECEIVED','CHAT_MSG_ADDON',
   'MAIL_SHOW','MAIL_CLOSED','MAIL_SEND_SUCCESS','MAIL_FAILED','MAIL_INBOX_UPDATE','MAIL_SEND_INFO_UPDATE',
-  'GUILDBANKFRAME_OPENED','GUILDBANKFRAME_CLOSED','GUILDBANKBAGSLOTS_CHANGED','GUILDBANK_UPDATE_MONEY','GUILDBANKLOG_UPDATE'}) do
+  'GUILDBANKFRAME_OPENED','GUILDBANKFRAME_CLOSED','GUILDBANKBAGSLOTS_CHANGED','GUILDBANK_UPDATE_MONEY','GUILDBANKLOG_UPDATE',
+  'ADDON_ACTION_BLOCKED','ADDON_ACTION_FORBIDDEN','PLAYER_REGEN_ENABLED'}) do
   pcall(frame.RegisterEvent,frame,event)
 end
 local function isBanker(kind)
@@ -4360,6 +4388,10 @@ frame:SetScript('OnEvent',function(_,event,...)
     local id=...
     if db and type(id)=='number' and not isSecret(id) and loadingItems[id] then loadingItems[id]=nil; GV.itemInfo(id) end
     requestUpdate()
+  elseif event=='PLAYER_REGEN_ENABLED' then
+    if GV.tagsAfterCombat then GV.tagsAfterCombat=false; GV.readTags() end
+  elseif event=='ADDON_ACTION_BLOCKED' or event=='ADDON_ACTION_FORBIDDEN' then
+    GV.actionBlocked(event,...)
   elseif event=='CHAT_MSG_ADDON' then
     local prefix,msg,channel,sender=...
     addonEvents=addonEvents+1

@@ -2,6 +2,14 @@
 
 All notable changes to Un-Nina Bank (formerly Guild Bank Toons) are listed here.
 
+## [1.0.2] - 2026-11-08
+
+### Fixed
+- **"Interface actions failed because of this AddOn"** no longer climbs in combat. WoW Forever blocks addons from reading the guild info text during combat; the addon now waits until combat ends to read it.
+
+### Added
+- If the game ever blocks something the addon does, it's noted in the message log and `/gbt debug`, and said once in chat, so it can be reported and fixed.
+
 ## [1.0.0] - 2026-11-07
 
 First release, as **Un-Nina Bank** (it started out as *Forever - Guild Bank Toons*; the addon folder is still `GuildBankToons`, so nothing else changes). Built for **WoW Forever**; also runs on Classic Era and Retail.

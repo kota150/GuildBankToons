@@ -1,6 +1,7 @@
 {
   "webhook": "https://discord.com/api/webhooks/<id>/<token>",
   "wow_dir": "/Applications/World of Warcraft",
+  "savedvars": "",
   "account": "",
   "guild": "",
   "link_base": "",

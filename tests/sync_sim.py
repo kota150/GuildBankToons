@@ -687,5 +687,19 @@ check('/gbt debug shows name, roster, sending and banks', any('roster:' in l and
 log=GBT(m1).exportText('log','text')
 check('the message log has what was sent, received and rejected', 'sent ' in log and 'got ' in log and 'REJECTED' in log)
 m2.L.execute('IsTrialAccount=nil')
+m1.fire('ADDON_ACTION_BLOCKED','SomeOtherAddon','CastSpellByName')
+m1.fire('ADDON_ACTION_BLOCKED','GuildBankToons','PickupContainerItem'); m1.fire('ADDON_ACTION_FORBIDDEN','GuildBankToons','PickupContainerItem')
+log=GBT(m1).exportText('log','text')
+check('blocked actions are logged for this addon only', 'BLOCKED by the game (ADDON_ACTION_BLOCKED): PickupContainerItem' in log and 'CastSpellByName' not in log)
+check('a blocked function is announced once', sum('The game blocked PickupContainerItem' in l for l in m1.logs)==1)
+# Forever blocks reading the guild info in combat: don't try then, read it once combat ends.
+tagged=lambda: m1.L.globals().GuildBankToonsDB.guilds["Verdant"].tagged
+m1.L.execute('InCombatLockdown=function() return true end'); m1.env.guildinfo='Bank stuff [GBT:Vault Keeper] [GBT:Spare Vault]'
+m1.fire('GUILD_ROSTER_UPDATE')
+check('guild info is not read in combat', tagged()['sparevault'] is None)
+m1.L.execute('InCombatLockdown=function() return false end'); m1.fire('PLAYER_REGEN_ENABLED')
+check('guild info is read when combat ends', tagged()['sparevault']=='Spare Vault')
+m1.fire('ADDON_ACTION_BLOCKED','GuildBankToons','GetGuildText()')
+check('a guild info block out of combat stops further reads, quietly', GBT(m1).tagsBlocked and not any('GetGuildText' in l for l in m1.logs))
 print('messages sent total:',bus.count)
 sys.exit(0 if ok else 1)
