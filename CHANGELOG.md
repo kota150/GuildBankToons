@@ -6,6 +6,7 @@ All notable changes to Un-Nina Bank (formerly Guild Bank Toons) are listed here.
 
 ### Fixed
 - **"Interface actions failed because of this AddOn"** no longer climbs in combat. WoW Forever blocks addons from reading the guild info text during combat; the addon now waits until combat ends to read it.
+- The Donate panel's list of attached items wraps inside the panel instead of running off its right edge.
 
 ### Added
 - If the game ever blocks something the addon does, it's noted in the message log and `/gbt debug`, and said once in chat, so it can be reported and fixed.

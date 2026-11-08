@@ -2547,7 +2547,7 @@ function GV.buildDonatePanel()
   if not f.TitleText then title:SetPoint('TOP',0,-6) end
   title:SetText('Donate to the guild bank')
   f.intro=label(f,'GameFontHighlightSmall','LEFT',true); f.intro:SetPoint('TOPLEFT',16,-32); f.intro:SetPoint('RIGHT',-16,0)
-  f.intro:SetText('Send items or gold to a bank toon. Every donation shows in the guild\'s Donations log.')
+  f.intro:SetText('Send items or gold to a bank toon. Every donation shows in the guild\'s Ledger.')
   f.to=label(f,'GameFontNormal'); f.to:SetPoint('TOPLEFT',16,-66); f.to:SetText('Send to')
   f.choices={}
   f.goldLabel=label(f,'GameFontNormal'); f.goldLabel:SetText('Gold')
@@ -2601,7 +2601,7 @@ function GV.refreshDonatePanel()
   f.note:ClearAllPoints(); f.note:SetPoint('LEFT',f.noteLabel,'LEFT',60,0)
   f.fill:ClearAllPoints(); f.fill:SetPoint('TOPLEFT',16,y-72)
   local pending=GV.donating()
-  f.steps:ClearAllPoints(); f.steps:SetPoint('TOPLEFT',16,y-104)
+  f.steps:ClearAllPoints(); f.steps:SetPoint('TOPLEFT',16,y-104); f.steps:SetPoint('RIGHT',-16,0)
   local items,money={},0
   if pending then items,money=GV.sendMailContents() end
   local has=next(items)~=nil or money>0
@@ -2610,7 +2610,7 @@ function GV.refreshDonatePanel()
   else
     f.steps:SetText('Donating to '..YELLOW..displayName(pending.bank)..'|r. Right-click items in your bags to attach them.')
   end
-  f.attached:ClearAllPoints(); f.attached:SetPoint('TOPLEFT',f.steps,'BOTTOMLEFT',0,-8)
+  f.attached:ClearAllPoints(); f.attached:SetPoint('TOPLEFT',f.steps,'BOTTOMLEFT',0,-8); f.attached:SetPoint('RIGHT',-16,0)
   f.attached:SetText(pending and (has and ('Attached: '..GV.describeDonation({items=items,money=money},5)) or (MUTED..'Nothing attached yet.|r')) or '')
   -- What the guild wants, so donors know what helps most.
   local wanted={}
@@ -2618,7 +2618,7 @@ function GV.refreshDonatePanel()
     if i>4 or e.have>=e.target then break end
     wanted[#wanted+1]=e.name..' ('..(e.target-e.have)..')'
   end
-  f.needs:ClearAllPoints(); f.needs:SetPoint('TOPLEFT',f.attached,'BOTTOMLEFT',0,-10)
+  f.needs:ClearAllPoints(); f.needs:SetPoint('TOPLEFT',f.attached,'BOTTOMLEFT',0,-10); f.needs:SetPoint('RIGHT',-16,0)
   f.needs:SetText(#wanted>0 and (YELLOW..'The guild needs:|r '..table.concat(wanted,', ')) or '')
   local inBags=pending and #GV.neededInBags()>0
   f.addNeeded:ClearAllPoints(); f.addNeeded:SetPoint('BOTTOMLEFT',16,42); f.addNeeded:SetShown(inBags and true or false)
@@ -3173,7 +3173,7 @@ function GV.buildSettingsPage(page)
   check('whispers','Whisper officers who don\'t have the addon','When you make a request, up to 3 online officers without the addon get a whisper.')
   check('companion','Offer a reload when requests change','Turn on where the Discord companion runs, so it posts requests right away.')
   check('lowStock','Tell me when a wanted item runs low','For officers: a chat alert when stock of something on the guild\'s wanted list drops below the target.')
-  check('donate','Show the Donate panel at mailboxes','Send items or gold to a bank toon in a few clicks; it goes in the Donations log.')
+  check('donate','Show the Donate panel at mailboxes','Send items or gold to a bank toon in a few clicks; it goes in the Ledger.')
   heading('When playing a bank toon')
   check('mailHelper','Show the mail helper at mailboxes','Lists approved requests beside the mail window and fills in each mail.')
   check('autofill','Fill the first approved request when a mailbox opens')
