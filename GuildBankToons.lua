@@ -3290,7 +3290,7 @@ function GV.refreshGM()
   local tagged={}
   for id,name in pairs(g.tagged) do if not g.managed[id] then tagged[#tagged+1]=displayName(name) end end
   table.sort(tagged)
-  local footer='Officers (ranks 0-'..(g.officerRank or 1)..') approve requests'..(GV.tagsReadable() and '; add [GBT:officers=N] to the guild info to change that.' or '.')
+  local footer='Officers (ranks 0-'..(g.officerRank or 1)..') approve requests'..((GV.tagsReadable() and not GV.forever) and '; add [GBT:officers=N] to the guild info to change that.' or '.')
   if #tagged>0 then footer='Also from the guild info: '..table.concat(tagged,', ')..'.   '..footer end
   ui.gmFooter:SetText(footer)
 end
@@ -4260,8 +4260,8 @@ SlashCmdList.GUILDBANKTOONS=function(input)
   elseif command=='goals' then GV.open('goals')
   elseif command=='export' then GV.openExport(arg~='' and arg or nil)
   elseif command=='bank' or command=='banks' then GV.bankCommand(arg)
-  elseif command=='tag' and not GV.tagsReadable() then
-    log('This version of the game doesn\'t let addons read the guild info. Add bank toons on the Guild tab instead.',true)
+  elseif command=='tag' and (GV.forever or not GV.tagsReadable()) then
+    log('On this version of the game, add bank toons on the Guild tab instead of the guild info.',true)
   elseif command=='tag' then
     log('Add this to the guild info (Guild > Guild Information): |cffffd100[GBT:'..(arg~='' and arg or key())..']|r',true)
   elseif command=='requests' then

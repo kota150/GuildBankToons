@@ -7,6 +7,7 @@ All notable changes to Un-Nina Bank (formerly Guild Bank Toons) are listed here.
 ### Fixed
 - The Donate panel's list of attached items wraps inside the panel instead of running off its right edge.
 - The Donate panel and its setting say "Ledger" instead of the old "Donations log".
+- On WoW Forever, the Guild tab and `/gbt tag` no longer point you to guild info tags, which Forever's guild management doesn't support. Bank toons are set on the Guild tab.
 
 ## [1.0.2] - 2026-11-08
 

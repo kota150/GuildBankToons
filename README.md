@@ -4,13 +4,17 @@
 
 Built for **WoW Forever**. It also loads on Classic Era and retail, but Forever is what it's designed and tested around.
 
+**Download:** [Un-Nina Bank on CurseForge](https://www.curseforge.com/wow/addons/un-ninja-bank-guild-bank-sharing). Pairs with [GuildForge](https://www.curseforge.com/wow/addons/guild-forge-guild-profession-tracker), the guild profession tracker, for craft orders straight from the guild bank.
+
+> **On WoW Forever, guild management stays in the game's hands.** Forever doesn't let anyone promote or demote members or set notes, and the addon doesn't try to work around that. It never changes ranks, notes or the guild info. Bank toons are set on the addon's **Guild** tab, and who counts as an officer comes from the ranks guild members already have.
+
 ## Setting up
 
 1. **Pick the bank character(s).** The guild can have as many as it likes. The easiest way: the **guild master or an officer** opens the window (minimap button or `/gbt`), goes to the **Guild** tab, types the bank toon's name and presses **Add bank toon**. **Rename** gives a bank toon a name the guild sees ("Mats & Herbs"); officers can also right-click any bank or guild bank tab in the Bank tab's sidebar to name it. The list goes to every guildmate running the addon and is passed along like the bank contents, so people who log in while the guild master is offline still get it. Everyone can see the tab; only officers and the guild master can change it, up to 20 bank toons. (`/gbt bank add|remove|clear|list Name` does the same from chat.)
 
-   Alternatively, an officer can add a tag per bank character to the guild info text (Guild → Guild Information), for example `[GBT:Vault Keeper]`; `/gbt tag` prints it for you. Use the bank character's full name, first name and surname. Case and spaces don't matter, and no realm is needed. Both ways can be used together. Any member can also follow a bank toon just for themselves under **Settings**.
+   **Classic Era and Retail only:** alternatively, an officer can add a tag per bank character to the guild info text (Guild → Guild Information), for example `[GBT:Vault Keeper]`; `/gbt tag` prints it for you. Use the bank character's full name, first name and surname. Case and spaces don't matter, and no realm is needed. Both ways can be used together. On Forever, use the Guild tab instead: notes and the guild info can't be relied on there. Any member can also follow a bank toon just for themselves under **Settings**.
 2. **Log in on the bank character with the addon enabled.** Its bags are read straight away. The bank can only be read while it's open, so **visit the banker once**. After that the bank contents carry over until the next visit.
-3. **Optional: say who the officers are.** By default ranks 0 and 1 (guild master and the rank below) handle requests. To change it, add `[GBT:officers=2]` to the guild info, which makes ranks 0–2 officers.
+3. **Who the officers are.** Ranks 0 and 1 (the guild master and the rank below) handle requests. On Forever that's fixed, since ranks can't be changed there; put whoever should approve requests in those ranks when the guild is set up. On Classic Era and Retail you can widen it by adding `[GBT:officers=2]` to the guild info, which makes ranks 0–2 officers.
 4. That's it. Guildmates click the minimap button (or type `/gbt`) to browse.
 
 ## Forever's guild bank
@@ -160,7 +164,7 @@ The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/Guild
 
 ## Installing
 
-Install it from **CurseForge** (the CurseForge app picks the right version for WoW Forever, Classic Era or Retail), or by hand:
+Install it from **[CurseForge](https://www.curseforge.com/wow/addons/un-ninja-bank-guild-bank-sharing)** (the CurseForge app picks the right version for WoW Forever, Classic Era or Retail), or by hand:
 
 1. Copy the `GuildBankToons` folder into your AddOns folder (the folder keeps that short name; the game lists it as *Un-Nina Bank*):
    - **WoW Forever**: `World of Warcraft/_forever_/Interface/AddOns/GuildBankToons`
@@ -176,6 +180,7 @@ Install it from **CurseForge** (the CurseForge app picks the right version for W
 - **Modern API**: Forever runs on the same UI code as retail Midnight, so the addon uses the `C_Container`, `C_Item`, `C_ChatInfo` and `C_GuildInfo` APIs, retail-style frames and tabs, Options → AddOns, and the AddOns menu button. It respects Midnight's secret values and holds guild messages while the game blocks addon chat (such as combat in instances), sending them afterwards.
 - **Names**: characters are identified by first name and surname only, however the game writes them: "Vault Keeper", "Vault-Keeper", or with a realm added ("Vault-Keeper-NekRosh", "Vault-Keeper-CAMWOWUS2Realm2PvE"). Realms are ignored: guildmates on Forever can report different ones. Your own full name comes from the game at login (its surname too); if it's ever missing, the character learns it from its first message to the guild a couple of seconds in. Settings and `/gbt status` show the name it's using. This matches how GuildForge reads Forever names.
 - **Alts**: the addon remembers each of your characters separately (by the game's character ID), so alts that share a first name never get mixed up, and a character only acts as a bank toon once it's sure of its own full name. Data is kept per guild (by name on Forever; by guild and realm on Classic Era): alts in the same guild share one copy, alts in other guilds have their own. Settings and the window's size and place are shared by all your characters.
+- **Guild management**: Forever doesn't allow promoting, demoting or setting notes, so the addon never relies on them. Bank toons live on the Guild tab, and officers are ranks 0–1 as the game has them. The game also blocks addons from reading the guild info text in combat, so the addon only reads it out of combat (it only looks there for the optional `[GBT:...]` tags).
 - **Trial accounts**: Forever doesn't let trial accounts send addon messages. The addon doesn't try to guess (the game's trial flags can be set on accounts that send fine); if the game blocks you, you'll still see what guildmates share.
 
 **Also loads on**, with less testing:
@@ -187,7 +192,7 @@ The bank scan covers both the Classic bank layout and modern bank tabs; containe
 
 ## For other addons
 
-Other addons (GuildForge, for crafting materials) can use the guild bank through the global `GuildBankToonsAPI`. Check that it exists before using it; functions keep their meaning across versions, and `version` goes up when one is added.
+Other addons ([GuildForge](https://www.curseforge.com/wow/addons/guild-forge-guild-profession-tracker), for crafting materials) can use the guild bank through the global `GuildBankToonsAPI`. Check that it exists before using it; functions keep their meaning across versions, and `version` goes up when one is added.
 
 | Function | What it does |
 | --- | --- |

@@ -28,7 +28,7 @@ Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 ![Asking for an item: pick the bank toon, how many, and a note](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/request-dialog.png)
 
 ![Requests waiting for an officer to approve or deny](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/requests.png)
-- **Craft orders:** the bank mails the materials straight to a crafter. Works with [GuildForge](https://github.com/TheFrosty02/GuildForge), which adds "Get mats from guild bank" to its recipes.
+- **Craft orders:** the bank mails the materials straight to a crafter. Works with [GuildForge](https://www.curseforge.com/wow/addons/guild-forge-guild-profession-tracker), which adds "Get mats from guild bank" to its recipes.
 
 ## Donate by mail
 
