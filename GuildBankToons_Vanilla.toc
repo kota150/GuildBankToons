@@ -1,5 +1,5 @@
 ## Interface: 11509
-## Title: |cffd8aa55Un-Nina Bank|r
+## Title: |cffd8aa55Un-Ninja Bank|r
 ## Notes: Your guild's bank toons and guild bank in one window: requests, donations by mail, goals and a public ledger, even while the bank toons are offline
 ## Author: Kota150
 ## Version: @project-version@

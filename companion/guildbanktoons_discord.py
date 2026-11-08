@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Un-Nina Bank (formerly Forever - Guild Bank Toons) Discord companion.
+"""Un-Ninja Bank (formerly Forever - Guild Bank Toons) Discord companion.
 
 Reads the addon's SavedVariables (GuildBankToons.lua) file (written when you log out or /reload) and keeps one Discord
 message per guild bank character up to date through a webhook. New item requests get their own message
@@ -275,7 +275,7 @@ def build_message(guild_name, snap, names, link_base, reserved=None, title=None)
     owner = snap.get("owner", "?")
     stamp = int(snap.get("stamp") or 0)
     bank_stamp = int(snap.get("bankStamp") or 0)
-    footer = "Un-Nina Bank snapshot" + (f" via {snap['via']}" if snap.get("via") else " from the bank character")
+    footer = "Un-Ninja Bank snapshot" + (f" via {snap['via']}" if snap.get("via") else " from the bank character")
     summary = {
         "title": f"🏦 {title or short(owner)}" + (f" ({short(owner)})" if title and title != short(owner) else ""),
         "description": f"**Gold:** {money(snap.get('gold'))}\n**Guild:** {guild_name}"
@@ -747,7 +747,7 @@ def run_once(args, state):
 
 def main():
     config = load_json(CONFIG_PATH, {})
-    p = argparse.ArgumentParser(description="Post Un-Nina Bank contents to Discord.")
+    p = argparse.ArgumentParser(description="Post Un-Ninja Bank contents to Discord.")
     p.add_argument("--webhook", default=os.environ.get("GUILDBANKTOONS_WEBHOOK") or config.get("webhook"))
     p.add_argument("--savedvars", default=config.get("savedvars"), help="path to SavedVariables/GuildBankToons.lua")
     p.add_argument("--wow-dir", default=config.get("wow_dir"), help="World of Warcraft install folder")

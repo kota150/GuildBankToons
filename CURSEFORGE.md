@@ -1,10 +1,10 @@
 <!-- Paste everything below this line into the CurseForge project description (Markdown mode). -->
 
-# Un-Nina Bank
+# Un-Ninja Bank
 
 **Your guild bank, open to the whole guild, even when the bank toons are offline.**
 
-Un-Nina Bank puts your guild's bank characters and guild bank in one window that every guildmate can browse. Ask for what you need in a click, donate by mail, and see exactly what came in and went out.
+Un-Ninja Bank puts your guild's bank characters and guild bank in one window that every guildmate can browse. Ask for what you need in a click, donate by mail, and see exactly what came in and went out.
 
 Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 
@@ -62,7 +62,7 @@ A small companion script ([setup on GitHub](https://github.com/kota150/GuildBank
 
 ## Getting started
 
-1. Install Un-Nina Bank and log in.
+1. Install Un-Ninja Bank and log in.
 2. **Guild master or an officer:** open the window (minimap button or `/gbt`), go to the **Guild** tab and add your bank toons.
 3. Log in on each bank toon once and visit the banker, so its bank is read.
 4. Get your guildmates to install it: everyone running it helps keep the bank up to date for everyone else.

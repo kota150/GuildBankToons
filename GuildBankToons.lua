@@ -1,4 +1,4 @@
--- Un-Nina Bank (folder GuildBankToons; formerly Forever - Guild Bank Toons) - built for WoW: Forever; also loads on Classic Era and retail. Shares the bags, bank and gold of the guild's bank characters
+-- Un-Ninja Bank (folder GuildBankToons; formerly Forever - Guild Bank Toons) - built for WoW: Forever; also loads on Classic Era and retail. Shares the bags, bank and gold of the guild's bank characters
 -- over guild addon chat. Every guildmate keeps a copy and passes it on, so the bank stays browsable while
 -- the bank character is offline. The SavedVariables file doubles as the export for the Discord companion.
 -- Look the addon up by the folder WoW loaded it from: the modern lookup errors on an unknown name.
@@ -51,7 +51,7 @@ local InsertChatLink=(ChatFrameUtil and ChatFrameUtil.InsertLink) or ChatEdit_In
 local function settings() return db and db.settings or {} end
 local function log(s,always)
   if not always and settings().quiet then return end
-  print('|cffd8aa55Un-Nina Bank:|r '..tostring(s))
+  print('|cffd8aa55Un-Ninja Bank:|r '..tostring(s))
 end
 -- Server time, so stamps from different players' machines compare fairly.
 local function now() return (GetServerTime and GetServerTime()) or (time and time()) or 0 end
@@ -2268,7 +2268,7 @@ function GV.startDonation(bank,copper,note)
   if SendMailNameEditBox then SendMailNameEditBox:SetText(displayName(bank)) end
   if SendMailSubjectEditBox then SendMailSubjectEditBox:SetText(DONATION_SUBJECT..' #'..donating.ref) end
   local body=mailBodyBox()
-  if body then body:SetText((donating.note~='' and (donating.note..'\n\n') or '')..'Sent with Un-Nina Bank.') end
+  if body then body:SetText((donating.note~='' and (donating.note..'\n\n') or '')..'Sent with Un-Ninja Bank.') end
   if copper and copper>0 then
     if MoneyInputFrame_SetCopper and SendMailMoney then MoneyInputFrame_SetCopper(SendMailMoney,copper)
     elseif SetSendMailMoney then SetSendMailMoney(copper) end
@@ -3946,7 +3946,7 @@ function GV.buildWindow()
   table.insert(UISpecialFrames,'GuildBankToonsFrame')
   local title=f.TitleText or label(f,'GameFontHighlight','CENTER')
   if not f.TitleText then title:SetPoint('TOP',0,-6) end
-  title:SetText('Un-Nina Bank')
+  title:SetText('Un-Ninja Bank')
   local grip=CreateFrame('Button',nil,f)
   grip:SetSize(16,16); grip:SetPoint('BOTTOMRIGHT',-4,4); grip:SetFrameLevel((f:GetFrameLevel() or 0)+10)
   grip:SetNormalTexture('Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up')
@@ -4036,7 +4036,7 @@ end
 local BROKER_NAME='Guild Bank Toons'
 local function dbIcon() return ui.broker and LibStub and LibStub('LibDBIcon-1.0',true) end
 function GV.minimapTooltip(tooltip)
-  tooltip:AddLine('Un-Nina Bank')
+  tooltip:AddLine('Un-Ninja Bank')
   local open=GV.guild() and GV.activeRequestCount() or 0
   if open>0 then tooltip:AddLine(open..' active request'..(open==1 and '' or 's'),1,1,1) end
   if GV.guild() and #GV.bankList()>0 then tooltip:AddLine('Guild bank gold: '..GV.money(GV.currentGold('*')),1,1,1) end
@@ -4132,7 +4132,7 @@ end
 -- A page under the game's Options > AddOns that opens the Settings tab.
 function GV.registerOptions()
   local panel=CreateFrame('Frame')
-  panel.name='Un-Nina Bank'
+  panel.name='Un-Ninja Bank'
   local title=label(panel,'GameFontNormalLarge'); title:SetPoint('TOPLEFT',16,-16); title:SetText(panel.name)
   local text=label(panel,'GameFontHighlight','LEFT',true); text:SetPoint('TOPLEFT',16,-46); text:SetPoint('RIGHT',-16,0)
   text:SetText('All of the addon\'s settings are on the Settings tab of its window. The guild master manages bank toons on the Guild Master tab.')
@@ -4198,7 +4198,7 @@ function GV.debugLines()
   local count=0
   for _ in pairs(roster) do count=count+1 end
   local lines={
-    string.format('Un-Nina Bank v%s on %s (interface %s)',VERSION,GV.forever and 'WoW Forever' or 'not Forever',tostring(iface)),
+    string.format('Un-Ninja Bank v%s on %s (interface %s)',VERSION,GV.forever and 'WoW Forever' or 'not Forever',tostring(iface)),
     string.format('you: %s  (id %s; UnitName gives %s / %s; name %s)',key(),tostring(me),tostring(first),tostring(second),nameConfirmed and 'confirmed' or 'not confirmed yet'),
     string.format('guild: %s; roster: %d members read; you %s',tostring((guildKey())),count,
       member and ('found, rank '..tostring(member.rank)..(GV.isOfficer(me) and ' (officer)' or '')) or 'NOT FOUND in the roster'),

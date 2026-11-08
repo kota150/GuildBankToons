@@ -1,10 +1,10 @@
-# Un-Nina Bank
+# Un-Ninja Bank
 
-**Your guild bank character's bags, bank and gold, visible to the whole guild, even while it's offline.** Un-Nina Bank (formerly *Forever - Guild Bank Toons*) shares the bank character's contents over guild addon chat. Every guildmate running it keeps a copy and passes it on, so anyone online can show it to anyone else. A companion script posts the same contents to Discord.
+**Your guild bank character's bags, bank and gold, visible to the whole guild, even while it's offline.** Un-Ninja Bank (formerly *Forever - Guild Bank Toons*) shares the bank character's contents over guild addon chat. Every guildmate running it keeps a copy and passes it on, so anyone online can show it to anyone else. A companion script posts the same contents to Discord.
 
 Built for **WoW Forever**. It also loads on Classic Era and retail, but Forever is what it's designed and tested around.
 
-**Download:** [Un-Nina Bank on CurseForge](https://www.curseforge.com/wow/addons/un-ninja-bank-guild-bank-sharing). Pairs with [GuildForge](https://www.curseforge.com/wow/addons/guild-forge-guild-profession-tracker), the guild profession tracker, for craft orders straight from the guild bank.
+**Download:** [Un-Ninja Bank on CurseForge](https://www.curseforge.com/wow/addons/un-ninja-bank-guild-bank-sharing). Pairs with [GuildForge](https://www.curseforge.com/wow/addons/guild-forge-guild-profession-tracker), the guild profession tracker, for craft orders straight from the guild bank.
 
 > **On WoW Forever, guild management stays in the game's hands.** Forever doesn't let anyone promote or demote members or set notes, and the addon doesn't try to work around that. It never changes ranks, notes or the guild info. Bank toons are set on the addon's **Guild** tab, and who counts as an officer comes from the ranks guild members already have.
 
@@ -166,11 +166,11 @@ The script finds `World of Warcraft/_forever_/WTF/Account/*/SavedVariables/Guild
 
 Install it from **[CurseForge](https://www.curseforge.com/wow/addons/un-ninja-bank-guild-bank-sharing)** (the CurseForge app picks the right version for WoW Forever, Classic Era or Retail), or by hand:
 
-1. Copy the `GuildBankToons` folder into your AddOns folder (the folder keeps that short name; the game lists it as *Un-Nina Bank*):
+1. Copy the `GuildBankToons` folder into your AddOns folder (the folder keeps that short name; the game lists it as *Un-Ninja Bank*):
    - **WoW Forever**: `World of Warcraft/_forever_/Interface/AddOns/GuildBankToons`
    - Classic Era: `World of Warcraft/_classic_era_/Interface/AddOns/GuildBankToons`
    - Retail: `World of Warcraft/_retail_/Interface/AddOns/GuildBankToons`
-2. Restart the game (or `/reload`) and enable *Un-Nina Bank* on the character select AddOns screen.
+2. Restart the game (or `/reload`) and enable *Un-Ninja Bank* on the character select AddOns screen.
 
 ## Compatibility
 

@@ -1,6 +1,11 @@
 # Changelog
 
-All notable changes to Un-Nina Bank (formerly Guild Bank Toons) are listed here.
+All notable changes to Un-Ninja Bank (formerly Guild Bank Toons) are listed here.
+
+## [Unreleased]
+
+### Fixed
+- The addon's name is spelled **Un-Ninja Bank** everywhere: the AddOns list, the window title, chat messages, Options, the minimap tooltip, donation mail and the Discord companion all said "Un-Nina Bank".
 
 ## [1.0.3] - 2026-11-08
 
@@ -19,7 +24,7 @@ All notable changes to Un-Nina Bank (formerly Guild Bank Toons) are listed here.
 
 ## [1.0.0] - 2026-11-07
 
-First release, as **Un-Nina Bank** (it started out as *Forever - Guild Bank Toons*; the addon folder is still `GuildBankToons`, so nothing else changes). Built for **WoW Forever**; also runs on Classic Era and Retail.
+First release, as **Un-Ninja Bank** (it started out as *Forever - Guild Bank Toons*; the addon folder is still `GuildBankToons`, so nothing else changes). Built for **WoW Forever**; also runs on Classic Era and Retail.
 
 ### The guild bank, shared
 - **Bank toons:** the guild master or an officer adds the guild's bank characters on the Guild tab (up to 20). Their bags, bank and gold go to every guildmate running the addon, and guildmates pass them along, so the bank stays browsable while the bank toons are offline.
