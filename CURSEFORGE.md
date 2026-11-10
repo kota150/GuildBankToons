@@ -24,6 +24,7 @@ Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 - Approved items are **reserved** so nobody else is promised the same stack.
 - The bank toon's **mail helper** fills in the mail and attaches exactly the right count. Sending it closes the request.
 - Ask for **gold**, or **several items in one mail**.
+- **For guildmates without the addon:** officers can put in a request for anyone in the guild (say, someone who asked in Discord). It's approved at once and mailed to them.
 
 ![Asking for an item: pick the bank toon, how many, and a note](https://raw.githubusercontent.com/kota150/GuildBankToons/main/docs/screenshots/request-dialog.png)
 

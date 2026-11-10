@@ -996,10 +996,17 @@ function GV.acceptRequest(r,relayed)
   return true
 end
 -- item: an item ID, 0 for gold, or itemID -> count for several items in one mail (count is then ignored).
--- opts.to: mail it to someone else (a crafter, for a craft order). Returns the request, or nil and why.
+-- opts.to: mail it to someone else (a crafter, for a craft order). opts.member: an officer enters it for that guild
+-- member (someone without the addon, asking on Discord); it's approved by the officer at once. Returns the request, or nil and why.
 function GV.createRequest(item,count,note,bank,opts)
   local g=GV.guild()
   if not g then return nil,'Not in a guild.' end
+  local member
+  if opts and opts.member and opts.member~='' and nameId(opts.member)~=myId() then
+    if not GV.isOfficer(myId()) then log('Only officers and the guild master can put in requests for other members.',true); return nil,'Not an officer.' end
+    member=GV.memberName(opts.member)
+    if not member then log('There\'s no guild member called '..tostring(opts.member)..'.',true); return nil,'Not a guild member.' end
+  end
   local items
   if type(item)=='table' then
     items,count={},0
@@ -1016,7 +1023,7 @@ function GV.createRequest(item,count,note,bank,opts)
   end
   if item==0 and GV.rule('gold')==0 then log('The guild isn\'t taking gold requests right now.',true); return nil,'Gold requests are off.' end
   local limit=GV.rule('limit')
-  if limit>0 and item~=0 then
+  if limit>0 and item~=0 and not member then
     local used=GV.requestedToday(myId())
     if used+count>limit then
       log('The guild\'s limit is '..limit..' items a day per member, and you\'ve asked for '..used..' in the last 24 hours.',true)
@@ -1025,8 +1032,20 @@ function GV.createRequest(item,count,note,bank,opts)
   end
   local to=opts and opts.to and baseName(opts.to)
   if to and nameId(to)==myId() then to=nil end
-  local r={id=myId()..'-'..now()..'-'..math.random(100,999),by=key(),updated=now(),status='open',
+  local r={id=myId()..'-'..now()..'-'..math.random(100,999),by=member or key(),updated=now(),status='open',
     bank=bank,item=item,count=math.max(1,math.min(items and 99999 or 9999,count)),items=items,to=to,note=clean(note,60)}
+  if member then
+    -- Entered by an officer, so it's approved as it's made; every client accepts an approval from an officer.
+    r.status,r.actor,r.approvedBy=('approved'),key(),key()
+    g.requests[r.id]=r
+    GV.queue(GV.requestPayload(r))
+    requestUpdate()
+    log('Put in '..GV.describe(r)..' for '..displayName(member)..', approved. '..GV.bankTitle(bank)..' will mail it to them.',true)
+    GV.tellMember(r)
+    GV.notify(r,true,false)
+    GV.promptReload()
+    return r
+  end
   g.requests[r.id]=r
   acks[r.id]={}
   GV.queue(GV.requestPayload(r))
@@ -1037,6 +1056,20 @@ function GV.createRequest(item,count,note,bank,opts)
   GV.schedule('whisper:'..r.id,6,function() GV.whisperOfficers(r) end)
   GV.promptReload()
   return r
+end
+-- A guild member's name as the roster has it (nil if nobody in the guild is called that).
+function GV.memberName(name)
+  GV.readRoster()
+  local id=nameId(name)
+  local m=id and roster[id]
+  return m and (baseName(m.name) or m.name) or nil
+end
+-- Whisper a member without the addon that an officer put in their request (when they're online).
+function GV.tellMember(r)
+  local m=roster[nameId(r.by)]
+  if not (m and m.online and settings().whispers and SendChat) then return end
+  local text='[Guild Bank] '..displayName(key())..' put in your request for '..GV.describe(r)..'. '..GV.bankTitle(r.bank)..' will mail it to you.'
+  pcall(SendChat,text,'WHISPER',nil,m.name)
 end
 function GV.whisperOfficers(r)
   GV.readRoster()
@@ -2947,6 +2980,10 @@ function GV.buildRequestDialog()
   d.max:SetScript('OnClick',function() local t=d.toons[d.choice]; if t then d.amount:SetText(t.available) end end)
   d.noteLabel=label(d,'GameFontNormal'); d.noteLabel:SetText('Note')
   d.note=editBox(d,210,'Optional, e.g. "for my alt"'); d.note:SetMaxLetters(80)
+  d.forLabel=label(d,'GameFontNormal'); d.forLabel:SetText('For')
+  d.member=editBox(d,210,'Guild member without the addon'); d.member:SetMaxLetters(48)
+  d.member:HookScript('OnTextChanged',function() GV.checkRequest() end)
+  d.member:SetScript('OnEnterPressed',GV.submitRequest)
   d.warning=label(d,'GameFontRedSmall')
   d.hint=label(d,'GameFontDisableSmall','LEFT',true); d.hint:SetPoint('RIGHT',-16,0)
   d.ok=button(d,'Request',110); d.ok:SetPoint('BOTTOMRIGHT',-16,14)
@@ -2966,7 +3003,13 @@ function GV.checkRequest()
   elseif n<1 then warning='Enter how many you need.'
   elseif n>t.available then warning='Only '..t.available..' available on '..displayName(t.name)..'.' end
   d.warning:SetText(warning)
+  local forName=d.member:IsShown() and (d.member:GetText() or ''):match('^%s*(.-)%s*$') or ''
+  if warning=='' and forName~='' and nameId(forName)~=myId() and not GV.memberName(forName) then warning='There\'s no guild member called '..forName..'.' end
   local hint=(t and GV.isVault(t.id)) and 'An officer takes this out of the guild bank and mails it. If your rank can withdraw from that tab, you can take it yourself too.' or ''
+  if warning=='' and forName~='' and nameId(forName)~=myId() then
+    hint='Approved as you put it in, and mailed to '..GV.memberName(forName)..'.'
+  end
+  d.ok:SetText(forName~='' and nameId(forName)~=myId() and 'Put in' or 'Request')
   d.hint:SetText(hint)
   -- Room for the guild bank note only when it's showing.
   if d.baseY then d:SetHeight(-d.baseY+(hint~='' and 154 or 124)) end
@@ -3005,6 +3048,15 @@ function GV.openRequestDialog(e)
   d.amount:ClearAllPoints(); d.amount:SetPoint('LEFT',d.amountLabel,'LEFT',90,0)
   d.noteLabel:ClearAllPoints(); d.noteLabel:SetPoint('TOPLEFT',18,y-44)
   d.note:ClearAllPoints(); d.note:SetPoint('LEFT',d.noteLabel,'LEFT',90,0)
+  -- Officers can put a request in for a member who asked elsewhere (on Discord, say).
+  local officer=GV.isOfficer(myId())
+  d.forLabel:SetShown(officer); d.member:SetShown(officer)
+  if officer then
+    d.forLabel:ClearAllPoints(); d.forLabel:SetPoint('TOPLEFT',18,y-76)
+    d.member:ClearAllPoints(); d.member:SetPoint('LEFT',d.forLabel,'LEFT',90,0)
+    y=y-32
+  end
+  d.member:SetText('')
   d.warning:ClearAllPoints(); d.warning:SetPoint('TOPLEFT',18,y-72)
   d.hint:ClearAllPoints(); d.hint:SetPoint('TOPLEFT',18,y-88)
   d.baseY=y
@@ -3017,7 +3069,8 @@ function GV.submitRequest()
   local d=ui.request
   if not GV.checkRequest() then return end
   local t=d.toons[d.choice]
-  GV.createRequest(d.item,tonumber(d.amount:GetText()),d.note:GetText() or '',t.name)
+  local forName=d.member:IsShown() and (d.member:GetText() or ''):match('^%s*(.-)%s*$') or nil
+  GV.createRequest(d.item,tonumber(d.amount:GetText()),d.note:GetText() or '',t.name,{member=forName})
   d:Hide()
 end
 

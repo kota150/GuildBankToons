@@ -2,7 +2,12 @@
 
 All notable changes to Un-Ninja Bank (formerly Guild Bank Toons) are listed here.
 
-## [Unreleased]
+## [1.0.5] - 2026-11-09
+
+### Added
+- **Requests for members without the addon.** Officers and the guild master get a **For** box in the request dialog: type the name of a guild member who asked somewhere else (in your Discord requests channel, say) and press **Put in**. The request is approved at once, the bank toon is told to mail it to that member, the member gets a whisper if they're online, and it shows on Discord like any other request.
+
+## [1.0.4] - 2026-11-09
 
 ### Fixed
 - The addon's name is spelled **Un-Ninja Bank** everywhere: the AddOns list, the window title, chat messages, Options, the minimap tooltip, donation mail and the Discord companion all said "Un-Nina Bank".

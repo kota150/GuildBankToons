@@ -692,6 +692,22 @@ m1.fire('ADDON_ACTION_BLOCKED','GuildBankToons','PickupContainerItem'); m1.fire(
 log=GBT(m1).exportText('log','text')
 check('blocked actions are logged for this addon only', 'BLOCKED by the game (ADDON_ACTION_BLOCKED): PickupContainerItem' in log and 'CastSpellByName' not in log)
 check('a blocked function is announced once', sum('The game blocked PickupContainerItem' in l for l in m1.logs)==1)
+# --- officers put in requests for members without the addon (asked on Discord) ---
+bus.ranks['Dana Field']=4; bus.always_online.add('Dana Field')
+for c in (officer,m1,bank): c.fire('GUILD_ROSTER_UPDATE')
+def dana(c):
+    reqs=c.L.globals().GuildBankToonsDB.guilds["Verdant"].requests
+    return [r for _,r in reqs.items() if r.by=='Dana Field']
+officer.whispers.clear(); bank.logs.clear()
+GBT(officer).createRequest(2589,3,'asked on Discord','Vault Keeper',officer.L.table_from({'member':'dana field'})); bus.run(8)
+r=dana(m1)
+check('an officer can put in a request for a member without the addon', len(r)==1 and r[0].status=='approved' and r[0].actor=='Olivia Stone' and r[0].count==3)
+check('the bank toon is told to mail it to the member', any('Dana Field' in l and 'mail' in l for l in bank.logs))
+check('the member is whispered that it was put in', any(w[1]=='Dana-Field' and 'put in your request' in w[2] for w in officer.whispers))
+GBT(m1).createRequest(2589,1,'','Vault Keeper',m1.L.table_from({'member':'Dana Field'})); bus.run(8)
+check('members cannot put in requests for others', len(dana(officer))==1)
+GBT(officer).createRequest(2589,1,'','Vault Keeper',officer.L.table_from({'member':'Nobody Here'})); bus.run(8)
+check('a request for someone not in the guild is refused', any('no guild member called Nobody Here' in l for l in officer.logs))
 # Forever blocks reading the guild info in combat: don't try then, read it once combat ends.
 tagged=lambda: m1.L.globals().GuildBankToonsDB.guilds["Verdant"].tagged
 m1.L.execute('InCombatLockdown=function() return true end'); m1.env.guildinfo='Bank stuff [GBT:Vault Keeper] [GBT:Spare Vault]'
