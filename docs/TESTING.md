@@ -31,6 +31,8 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 - [ ] Officer approves it. The member is told; the item shows as reserved.
 - [ ] On the bank toon at a mailbox: the mail helper lists it; **Fill** addresses the mail and attaches exactly the right count. **Try a request for less than a full stack** (say 3 from a stack of 20): only 3 should be attached, split into a free bag slot first. With no free bag slot, the helper should say so instead. Sending marks it mailed everywhere and the mail shows in the Ledger as *Mailed out*.
 - [ ] As an officer, click an item and type a guild member's name in **For** (someone without the addon). A wrong name shows "There's no guild member called …" and greys out the button. With a real name, **Put in** makes it approved at once; the bank toon is told to mail it to that member, the member gets a whisper if online, and the mail helper addresses it to them. A non-officer doesn't see the For box.
+- [ ] Log the bank toon out, make a request, have someone make a second request once the bank toon is back, then `/reload` the bank toon: the first request shows up too.
+- [ ] As an officer, press **Mailed** on an approved request for a bank toon: it's marked mailed for everyone (on 1.0.6). A member doesn't see the button.
 - [ ] **Request gold** on the Bank tab: approve it, and check the mail helper puts the gold in the mail's money field.
 
 ## 5. Donations

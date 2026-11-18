@@ -320,8 +320,8 @@ check('a stale approval cannot reopen a mailed request', latest(m1).status=='mai
 slash(m1,'request 2589 1'); bus.run(10)
 slash(bank,'approve 1'); bus.run(5)
 check('bank character can approve', latest(officer).status=='approved')
-slash(officer,'mailed 1')
-check('only the bank character marks mailed', latest(officer).status=='approved')
+slash(m2,'mailed 1')
+check('a member cannot mark a request mailed', latest(officer).status=='approved')
 slash(bank,'mailed 1'); bus.run(5)
 check('bank character marks mailed by hand', latest(m1).status=='mailed')
 slash(m1,'request 2589 2'); bus.run(10)
@@ -708,6 +708,21 @@ GBT(m1).createRequest(2589,1,'','Vault Keeper',m1.L.table_from({'member':'Dana F
 check('members cannot put in requests for others', len(dana(officer))==1)
 GBT(officer).createRequest(2589,1,'','Vault Keeper',officer.L.table_from({'member':'Nobody Here'})); bus.run(8)
 check('a request for someone not in the guild is refused', any('no guild member called Nobody Here' in l for l in officer.logs))
+# --- a request the bank toon missed live still reaches it at login, even after it saw something newer ---
+def req(c,rid): return c.L.globals().GuildBankToonsDB.guilds["Verdant"].requests[rid]
+bank.online=False
+missed=GBT(m1).createRequest(2589,2,'missed it','Vault Keeper'); bus.run(8)
+bank.online=True
+GBT(m2).createRequest(2589,1,'seen it','Vault Keeper'); bus.run(8)
+check('setup: the bank toon missed one request but saw a newer one', req(bank,missed.id) is None and req(bank,latest(m2).id) is not None)
+bank.logout(); bank.login(); bus.run(30)
+check('a missed request reaches the bank toon at its next login', req(bank,missed.id) is not None and req(bank,missed.id).status==req(m1,missed.id).status)
+# --- officers can mark an approved request mailed (sent before the bank toon's addon had it) ---
+if req(officer,missed.id).status=='open': GBT(officer).setRequestStatus(req(officer,missed.id),'approved'); bus.run(5)
+check('an officer can mark a bank toon\'s approved request mailed', GBT(officer).setRequestStatus(req(officer,missed.id),'mailed'))
+bus.run(5)
+check('everyone sees it mailed', req(m1,missed.id).status=='mailed' and req(bank,missed.id).status=='mailed' and req(m1,missed.id).actor=='Olivia Stone')
+check('members still cannot mark requests mailed', not GBT(m1).allowed(req(m1,latest(m2).id),'open','mailed','alice'))
 # Forever blocks reading the guild info in combat: don't try then, read it once combat ends.
 tagged=lambda: m1.L.globals().GuildBankToonsDB.guilds["Verdant"].tagged
 m1.L.execute('InCombatLockdown=function() return true end'); m1.env.guildinfo='Bank stuff [GBT:Vault Keeper] [GBT:Spare Vault]'

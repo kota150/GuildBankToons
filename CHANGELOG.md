@@ -2,6 +2,14 @@
 
 All notable changes to Un-Ninja Bank (formerly Guild Bank Toons) are listed here.
 
+## [1.0.6] - 2026-11-18
+
+### Fixed
+- **Requests a bank toon missed now reach it.** At login the addon only asked for requests newer than the newest one it had, so a request it missed (logged out, on a loading screen or on an alt when it went out) never arrived once it had seen a newer one. Login now also compares open and approved requests with a guildmate and fills in any that are missing.
+
+### Added
+- **Officers can mark a request mailed.** Officers and the guild master see **Mailed** on approved requests in the Requests tab, for one a bank toon sent some other way (before its addon had the request, say). Guildmates need 1.0.6 to accept it.
+
 ## [1.0.5] - 2026-11-09
 
 ### Added

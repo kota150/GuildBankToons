@@ -582,7 +582,7 @@ local function topicId(topic) return topic:sub(1,1)=='*' and topic:match('^(%*%w
 function GV.held(id)
   local g=GV.guild()
   if not g then return 0,0 end
-  if id=='*list' then return GV.newestStamp(),0 end
+  if id=='*list' then return GV.newestStamp(),GV.activeDigest() end
   if id=='*gm' then return g.managedStamp or 0,0 end
   if id=='*plan' then return GV.plan().stamp or 0,0 end
   if id=='*view' then return GV.viewStamp(),0 end
@@ -604,6 +604,13 @@ function GV.pickOffer(id)
   local best,at
   for i,o in ipairs(c.offers) do
     if o.stamp>held and (not best or o.stamp>best.stamp or (o.stamp==best.stamp and o.owner and not best.owner)) then best,at=o,i end
+  end
+  if not best and id=='*list' then
+    -- Nobody has anything newer, but someone's open and approved requests differ from ours: one we missed.
+    local _,digest=GV.held('*list')
+    for i,o in ipairs(c.offers) do
+      if (o.hash or 0)~=0 and o.hash~=digest then best,at=o,i; break end
+    end
   end
   if not best then
     collecting[id]=nil
@@ -627,13 +634,18 @@ function GV.answered(id,senderId,stamp)
 end
 -- Someone asked about a topic and holds `theirs`: offer ours if it's newer. The bank toon offers its own
 -- copy first; everyone else waits a moment so one offer usually covers it.
-function GV.maybeOffer(topic,theirs)
+-- theirDigest (*list only): their open and approved requests; we offer when ours differ, even if not newer.
+function GV.maybeOffer(topic,theirs,theirDigest)
   local id=topicId(topic)
-  if not id or GV.held(id)<=theirs then return end
+  local function worth()
+    local stamp,hash=GV.held(id)
+    return stamp>theirs or ((theirDigest or 0)~=0 and hash~=theirDigest)
+  end
+  if not id or not worth() then return end
   if not timers['offer:'..id] then offersHeard[id]=0 end
   GV.once('offer:'..id,(id==myId()) and 0.2 or (0.3+math.random()*2.5),function()
     local stamp,hash=GV.held(id)
-    if stamp>theirs and (offersHeard[id] or 0)<ENOUGH_OFFERS then GV.queue('O|'..topic..'|'..stamp..'|'..hash,true) end
+    if worth() and (offersHeard[id] or 0)<ENOUGH_OFFERS then GV.queue('O|'..topic..'|'..stamp..'|'..hash,true) end
   end)
 end
 function GV.onOfferMessage(action,topic,rest,sender)
@@ -646,7 +658,7 @@ function GV.onOfferMessage(action,topic,rest,sender)
     stamp,hash=tonumber(stamp),tonumber(hash) or 0
     if not stamp or not plausible(stamp) then return end
     local mine,myHash=GV.held(id)
-    if stamp>=mine then offersHeard[id]=(offersHeard[id] or 0)+1 end
+    if stamp>=mine or (id=='*list' and hash~=0 and hash==myHash) then offersHeard[id]=(offersHeard[id] or 0)+1 end
     -- A different copy of our own bank is on offer (stale, or forged): ours replaces it.
     if id==myId() then
       if g.banks[id] and stamp>=mine and hash~=myHash then GV.outbid(id,stamp) end
@@ -654,7 +666,7 @@ function GV.onOfferMessage(action,topic,rest,sender)
     end
     local c=collecting[id]
     if c and not c.asked then
-      c.offers[#c.offers+1]={from=senderId,name=displayName(sender),stamp=stamp,owner=senderMatches(sender,topic)}
+      c.offers[#c.offers+1]={from=senderId,name=displayName(sender),stamp=stamp,hash=hash,owner=senderMatches(sender,topic)}
     end
   elseif action=='G' then
     local stamp,target=rest:match('^(%d+)|(.+)$')
@@ -663,7 +675,14 @@ function GV.onOfferMessage(action,topic,rest,sender)
     if id=='*list' then
       -- Several guildmates logging in at once: answer for the one who has the least.
       GV.listSince=math.min(GV.listSince or stamp,stamp)
-      GV.once('reqlist',0.1,function() local since=GV.listSince; GV.listSince=nil; GV.sendRequestList(since) end)
+      local _,digest=GV.held('*list')
+      local theirs=GV.askDigest[senderId]
+      if theirs and theirs~=0 and theirs~=digest then GV.listActive=true end
+      GV.once('reqlist',0.1,function()
+        local since,active=GV.listSince,GV.listActive
+        GV.listSince,GV.listActive=nil,nil
+        GV.sendRequestList(since,active)
+      end)
     elseif id=='*gm' then GV.once('list:send',0.1,function() GV.sendManaged(true) end)
     elseif id=='*plan' then GV.once('plan:send',0.1,function() GV.sendPlan(true) end)
     elseif id=='*view' then GV.once('view:send',0.1,function() GV.sendViews(true) end)
@@ -820,7 +839,11 @@ function GV.allowed(r,from,to,actor)
   if not actor or not STAGE[to] or (from and STAGE[to]<=STAGE[from]) then return false end
   if to=='open' then return from==nil and actor==nameId(r.by) end
   if to=='approved' or to=='denied' then return GV.isApprover(actor) end
-  if to=='mailed' then return (from==nil or from=='approved') and GV.canMail(r,actor) end
+  if to=='mailed' then
+    if (from==nil or from=='approved') and GV.canMail(r,actor) then return true end
+    -- Officers can close one the bank toon mailed some other way (before its addon even had the request).
+    return (from==nil or from=='approved') and GV.isOfficer(actor)
+  end
   if to=='cancelled' then return (from==nil or from=='open') and actor==nameId(r.by) end
   return false
 end
@@ -1121,9 +1144,32 @@ function GV.newestStamp()
   for _,d in ipairs(GV.donationList()) do newest=math.max(newest,d.updated or 0) end
   return newest
 end
-function GV.sendRequestList(since)
+-- A digest of the open and approved requests, so two guildmates can tell they hold different ones even when
+-- neither has anything newer (one missed a message). Never 0: 0 means an older version that sends none.
+function GV.activeDigest()
+  local parts={}
+  for _,r in ipairs(GV.requestList()) do if isActive(r) then parts[#parts+1]=r.id..':'..r.status end end
+  table.sort(parts)
+  local h=5381
+  for _,part in ipairs(parts) do
+    for i=1,#part do h=(h*33+part:byte(i))%16777213 end
+  end
+  return h+1
+end
+GV.askDigest={} -- guildmate id -> the digest they sent when they last asked for the list
+-- active: also send every open or approved request and anything closed in the last week, however old,
+-- because the asker is missing some.
+function GV.sendRequestList(since,active)
   GV.pruneRequests(); GV.pruneDonations()
   local list=GV.changedSince(since or 0)
+  if active then
+    local have={}
+    for _,entry in ipairs(list) do have[entry[3]]=true end
+    for _,r in ipairs(GV.requestList()) do
+      if not have[r.id] and (isActive(r) or now()-r.updated<7*86400) then list[#list+1]={r.updated,GV.requestPayload(r),r.id} end
+    end
+    table.sort(list,function(a,b) return a[1]<b[1] end)
+  end
   GV.queue('P|'..key()..'|'..#list,true)
   for _,entry in ipairs(list) do GV.queue(entry[2]) end
 end
@@ -1153,7 +1199,7 @@ function GV.syncRequests()
   GV.pruneRequests(); GV.pruneDonations()
   local since=GV.newestStamp()
   listening={seen={},since=since}
-  GV.queue('L|'..key()..'|'..since,true)
+  GV.queue('L|'..key()..'|'..since..'|'..GV.activeDigest(),true)
   GV.collect('*list',since)
   -- A reply that stalls partway still ends, so the login summary shows.
   GV.schedule('listen',120,GV.finishListening)
@@ -1162,7 +1208,9 @@ function GV.onRequestMessage(action,origin,rest,sender)
   local senderId=(not isSecret(sender) and nameId(sender)) or '?'
   if senderId==myId() or not GV.guild() then return end
   if action=='L' then
-    GV.maybeOffer('*list',tonumber(rest) or 0)
+    local since,digest=rest:match('^(%d+)|?(%d*)$')
+    GV.askDigest[senderId]=tonumber(digest)
+    GV.maybeOffer('*list',tonumber(since) or 0,tonumber(digest))
   elseif action=='P' then
     local c=collecting['*list']
     local mine=c and c.asked and c.asked.from==senderId
