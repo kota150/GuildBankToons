@@ -197,6 +197,7 @@ function GV.initDB()
   db.ownBank=db.ownBank or {}
   db.ui=db.ui or {}
   db.ui.filter=db.ui.filter or 'all'
+  db.ui.category=db.ui.category or 'all'
   db.ui.reqFilter=db.ui.reqFilter or 'active'
   db.ui.sort=db.ui.sort or 'name'
   db.ui.donFilter=db.ui.donFilter or 'all'
@@ -398,12 +399,42 @@ end
 function GV.itemInfo(id)
   local name,link,quality,_,_,_,_,_,_,icon=GetItemInfo(id)
   if name and not isSecret(name) then
-    db.items[id]={n=name,q=quality}
+    local cached=db.items[id] or {}
+    cached.n,cached.q=name,quality
+    db.items[id]=cached
     return name,link,quality,icon
   end
   if RequestItem then pcall(RequestItem,id) end
   local cached=db.items[id]
   return cached and cached.n,nil,cached and cached.q,GetItemIcon and GetItemIcon(id)
+end
+-- Categories for the Bank tab's tabs, from the game's item class (kept with the item's name in db.items).
+GV.CATEGORIES={{'all','All'},{'mats','Materials'},{'patterns','Patterns'},{'consumables','Consumables'},
+  {'gear','Gear'},{'crates','Crates'},{'containers','Containers'},{'other','Other'}}
+-- Item classes: 0 consumable, 1 container, 2 weapon, 3 gem, 4 armor, 5 reagent, 7 trade goods, 9 recipe, 11 quiver.
+local CLASS_CATEGORY={[0]='consumables',[1]='containers',[2]='gear',[3]='mats',[4]='gear',[5]='mats',[7]='mats',[9]='patterns',[11]='containers'}
+-- Things you open (crates, lockboxes, satchels) are consumables or miscellaneous items to the game; their names say what they are.
+local CRATE_WORDS={'crate','box','chest','cache','coffer','casket','trunk','satchel','sack','package','parcel','bundle','case'}
+local GetInstant=GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
+function GV.itemClass(id)
+  local cached=db.items[id]
+  if cached and cached.c then return cached.c end
+  local class
+  if GetInstant then class=select(6,GetInstant(id)) end
+  if class==nil and GetItemInfo then class=select(12,GetItemInfo(id)) end
+  if type(class)~='number' or isSecret(class) then return nil end
+  cached=cached or {}
+  cached.c=class
+  db.items[id]=cached
+  return class
+end
+function GV.category(id,name)
+  local class=GV.itemClass(id)
+  if (class==nil or class==0 or class==15) and type(name)=='string' then
+    local lower=name:lower()
+    for _,word in ipairs(CRATE_WORDS) do if lower:find(word,1,true) then return 'crates' end end
+  end
+  return CLASS_CATEGORY[class] or 'other'
 end
 -- Items still loading; GET_ITEM_INFO_RECEIVED caches only these, not every item the client sees.
 local loadingItems={}
@@ -582,7 +613,7 @@ local function topicId(topic) return topic:sub(1,1)=='*' and topic:match('^(%*%w
 function GV.held(id)
   local g=GV.guild()
   if not g then return 0,0 end
-  if id=='*list' then return GV.newestStamp(),GV.activeDigest() end
+  if id=='*list' then return GV.newestStamp(),GV.listDigest() end
   if id=='*gm' then return g.managedStamp or 0,0 end
   if id=='*plan' then return GV.plan().stamp or 0,0 end
   if id=='*view' then return GV.viewStamp(),0 end
@@ -606,7 +637,7 @@ function GV.pickOffer(id)
     if o.stamp>held and (not best or o.stamp>best.stamp or (o.stamp==best.stamp and o.owner and not best.owner)) then best,at=o,i end
   end
   if not best and id=='*list' then
-    -- Nobody has anything newer, but someone's open and approved requests differ from ours: one we missed.
+    -- Nobody has anything newer, but someone's backlog differs from ours: something one of us missed.
     local _,digest=GV.held('*list')
     for i,o in ipairs(c.offers) do
       if (o.hash or 0)~=0 and o.hash~=digest then best,at=o,i; break end
@@ -614,10 +645,18 @@ function GV.pickOffer(id)
   end
   if not best then
     collecting[id]=nil
-    if id=='*list' then GV.finishListening() end
+    if id=='*list' then
+      GV.note('login catch-up: '..#c.offers..' offer(s), none newer than '..held..' or with different open/approved requests; nothing to fetch')
+      GV.finishListening()
+    end
     return
   end
   table.remove(c.offers,at)
+  if id=='*list' then
+    GV.note('login catch-up: asking '..best.name..' (has '..best.stamp..', we have '..held..')')
+    local _,digest=GV.held('*list')
+    GV.noteListOffer(c.offers,(best.hash or 0)~=0 and best.hash~=digest)
+  end
   c.asked=best
   GV.queue('G|'..c.topic..'|'..held..'|'..best.name,true,function()
     GV.schedule('answer:'..id,ANSWER_WAIT,function() c.asked=nil; GV.pickOffer(id) end)
@@ -808,6 +847,10 @@ local STAGE={open=0,approved=1,denied=2,mailed=2,cancelled=2}
 local roster={} -- nameId -> {name=, rank=, online=}
 local acks={} -- request id -> set of officer ids whose client acknowledged it
 local listening -- the full list asked for at login: {from=, left=, seen={id=updated}}
+-- The guildmate we asked at login is sending their whole backlog (theirs differs from ours), and who else offered.
+function GV.noteListOffer(others,backlog)
+  if listening then listening.others,listening.backlog=others,backlog end
+end
 local lastReloadPrompt=-1000
 local SendChat=(C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
 local function clean(value,size) return (tostring(value or ''):gsub('[|\r\n]',' '):sub(1,size)) end
@@ -999,7 +1042,9 @@ function GV.notify(r,isNew,relayed)
   if not relayed or not isNew then GV.promptReload() end
 end
 -- Merges one request. Returns true when it changed something.
-function GV.acceptRequest(r,relayed)
+-- senderId: who sent this copy. A copy an officer (or the guild master) sends is taken at any status: the
+-- game vouches for who sent it, and officers see the whole guild's requests. It still only moves forward.
+function GV.acceptRequest(r,relayed,senderId)
   local g=GV.guild()
   if not g or not nameId(r.by) or not STAGE[r.status] or not r.item or r.count<1 or not plausible(r.updated) then return false end
   if now()-r.updated>keepFor(r) then return false end
@@ -1009,7 +1054,8 @@ function GV.acceptRequest(r,relayed)
   if from and STAGE[r.status]<=STAGE[from] then return false end
   local actor=(r.status=='open') and nameId(r.by) or nameId(r.actor)
   -- Until the roster loads nobody's rank can be checked, so approvals and denials are taken on trust.
-  local trusted=(r.status=='approved' or r.status=='denied') and next(roster)==nil and actor~=nil
+  local trusted=((r.status=='approved' or r.status=='denied') and next(roster)==nil and actor~=nil)
+    or (senderId~=nil and senderId~=myId() and GV.isOfficer(senderId))
   if not trusted and not GV.allowed(r,from,r.status,actor) then GV.reject('request '..r.id..': '..tostring(r.actor or r.by)..' may not make it '..r.status); return false end
   g.requests[r.id]=r
   for id in pairs(GV.requestItems(r)) do if not GV.itemInfo(id) then loadingItems[id]=true end end
@@ -1061,7 +1107,7 @@ function GV.createRequest(item,count,note,bank,opts)
     -- Entered by an officer, so it's approved as it's made; every client accepts an approval from an officer.
     r.status,r.actor,r.approvedBy=('approved'),key(),key()
     g.requests[r.id]=r
-    GV.queue(GV.requestPayload(r))
+    GV.queue(GV.requestPayload(r),true)
     requestUpdate()
     log('Put in '..GV.describe(r)..' for '..displayName(member)..', approved. '..GV.bankTitle(bank)..' will mail it to them.',true)
     GV.tellMember(r)
@@ -1071,7 +1117,7 @@ function GV.createRequest(item,count,note,bank,opts)
   end
   g.requests[r.id]=r
   acks[r.id]={}
-  GV.queue(GV.requestPayload(r))
+  GV.queue(GV.requestPayload(r),true)
   requestUpdate()
   log('Requested '..GV.describe(r)..'.',true)
   -- Give approvers' clients a few seconds to acknowledge before whispering the ones that didn't.
@@ -1125,7 +1171,7 @@ function GV.setRequestStatus(r,status)
   copy.status,copy.actor,copy.updated=status,key(),math.max(now(),r.updated+1)
   if status=='approved' then copy.approvedBy=key() end
   GV.guild().requests[r.id]=copy
-  GV.queue(GV.requestPayload(copy))
+  GV.queue(GV.requestPayload(copy),true)
   requestUpdate()
   GV.notify(copy,false,false)
   return true
@@ -1144,11 +1190,15 @@ function GV.newestStamp()
   for _,d in ipairs(GV.donationList()) do newest=math.max(newest,d.updated or 0) end
   return newest
 end
--- A digest of the open and approved requests, so two guildmates can tell they hold different ones even when
--- neither has anything newer (one missed a message). Never 0: 0 means an older version that sends none.
-function GV.activeDigest()
+-- The backlog every guildmate keeps in step: open and approved requests, and every request that changed in the
+-- last 7 days whatever its status.
+local BACKLOG=7*86400
+local function inBacklog(r) return isActive(r) or now()-(r.updated or 0)<BACKLOG end
+-- A digest of the backlog, so two guildmates can tell they hold different requests even when neither has
+-- anything newer (one missed a message). Never 0: 0 means an older version that sends none.
+function GV.listDigest()
   local parts={}
-  for _,r in ipairs(GV.requestList()) do if isActive(r) then parts[#parts+1]=r.id..':'..r.status end end
+  for _,r in ipairs(GV.requestList()) do if inBacklog(r) then parts[#parts+1]=r.id..':'..r.status end end
   table.sort(parts)
   local h=5381
   for _,part in ipairs(parts) do
@@ -1157,16 +1207,16 @@ function GV.activeDigest()
   return h+1
 end
 GV.askDigest={} -- guildmate id -> the digest they sent when they last asked for the list
--- active: also send every open or approved request and anything closed in the last week, however old,
--- because the asker is missing some.
-function GV.sendRequestList(since,active)
+-- backlog: also send the whole backlog (open and approved requests, and everything from the last 7 days),
+-- because the asker's differs from ours.
+function GV.sendRequestList(since,backlog)
   GV.pruneRequests(); GV.pruneDonations()
   local list=GV.changedSince(since or 0)
-  if active then
+  if backlog then
     local have={}
     for _,entry in ipairs(list) do have[entry[3]]=true end
     for _,r in ipairs(GV.requestList()) do
-      if not have[r.id] and (isActive(r) or now()-r.updated<7*86400) then list[#list+1]={r.updated,GV.requestPayload(r),r.id} end
+      if not have[r.id] and inBacklog(r) then list[#list+1]={r.updated,GV.requestPayload(r),r.id} end
     end
     table.sort(list,function(a,b) return a[1]<b[1] end)
   end
@@ -1179,11 +1229,42 @@ function GV.finishListening()
   listening=nil
   GV.cancel('listen')
   if not heard then return end
+  local got=0
+  for _ in pairs(heard.seen) do got=got+1 end
+  GV.note('login catch-up done: '..got..' request(s)/donation(s) from '..tostring(heard.from or 'nobody')..(heard.left and heard.left>0 and (', '..heard.left..' never arrived') or ''))
   local me=myId()
   local waiting,toMail=0,0
   if heard.from then
+    local sent={}
     for _,entry in ipairs(GV.changedSince(heard.since)) do
-      if (heard.seen[entry[3]] or -1)<entry[1] then GV.queue(entry[2]) end
+      if (heard.seen[entry[3]] or -1)<entry[1] then GV.queue(entry[2]); sent[entry[3]]=true end
+    end
+    -- They sent their whole backlog: anything of ours they don't have, or have older, goes back to the guild
+    -- (a bank toon's "mailed" that didn't get out before it logged off, say).
+    if heard.backlog then
+      for _,r in ipairs(GV.requestList()) do
+        if inBacklog(r) and not sent[r.id] and (heard.seen[r.id] or -1)<r.updated then GV.queue(GV.requestPayload(r)) end
+      end
+    end
+  end
+  -- Ask the next guildmate whose backlog still differs from ours (up to 3 in all), so one who missed
+  -- something doesn't decide what we get.
+  if heard.others and (heard.round or 1)<3 then
+    local _,digest=GV.held('*list')
+    for i,o in ipairs(heard.others) do
+      if (o.hash or 0)~=0 and o.hash~=digest and o.from~=heard.from then
+        table.remove(heard.others,i)
+        GV.note('login catch-up: '..o.name..' has different requests too; asking them as well')
+        local since=GV.newestStamp()
+        listening={seen={},since=since,others=heard.others,round=(heard.round or 1)+1,backlog=true}
+        local c={topic='*list',offers={},since=since,at=GetTime(),asked=o}
+        collecting['*list']=c
+        GV.queue('G|*list|'..since..'|'..o.name,true,function()
+          GV.schedule('answer:*list',ANSWER_WAIT,function() c.asked=nil; GV.pickOffer('*list') end)
+        end)
+        GV.schedule('listen',120,GV.finishListening)
+        return -- the summary below comes once the last guildmate has answered
+      end
     end
   end
   for _,r in ipairs(GV.requestList()) do
@@ -1199,7 +1280,12 @@ function GV.syncRequests()
   GV.pruneRequests(); GV.pruneDonations()
   local since=GV.newestStamp()
   listening={seen={},since=since}
-  GV.queue('L|'..key()..'|'..since..'|'..GV.activeDigest(),true)
+  local open,approved=0,0
+  for _,r in ipairs(GV.requestList()) do
+    if r.status=='open' then open=open+1 elseif r.status=='approved' then approved=approved+1 end
+  end
+  GV.note('login catch-up: asking the guild for requests since '..since..' (we hold '..open..' open, '..approved..' approved)')
+  GV.queue('L|'..key()..'|'..since..'|'..GV.listDigest(),true)
   GV.collect('*list',since)
   -- A reply that stalls partway still ends, so the login summary shows.
   GV.schedule('listen',120,GV.finishListening)
@@ -1232,7 +1318,7 @@ function GV.onRequestMessage(action,origin,rest,sender)
     end
     local fromList=listening and listening.from==senderId
     -- Anyone may pass a request on; only the requester's own message counts as brand new (and alerts).
-    GV.acceptRequest(r,not senderMatches(sender,origin))
+    GV.acceptRequest(r,not senderMatches(sender,origin),senderId)
     if fromList then
       listening.seen[id]=r.updated
       listening.left=listening.left-1
@@ -2889,8 +2975,17 @@ function GV.buildItemsPage(page)
   ui.search=editBox(main,160,'Search items',true)
   ui.search:SetPoint('TOPLEFT',8,-1); ui.search:SetPoint('RIGHT',ui.where[1],'LEFT',-12,0)
   ui.search:HookScript('OnTextChanged',function() requestUpdate() end)
-  ui.summary=label(main,'GameFontHighlightSmall'); ui.summary:SetPoint('TOPLEFT',4,-32); ui.summary:SetPoint('RIGHT',-24,0)
-  local list=CreateFrame('Frame',nil,main); list:SetPoint('TOPLEFT',0,-52); list:SetPoint('BOTTOMRIGHT',0,22)
+  -- Category tabs: All, Materials, Patterns and so on, each with how many it holds.
+  ui.cats={}
+  for i,c in ipairs(GV.CATEGORIES) do
+    local b=button(main,c[2],60); b:SetHeight(20)
+    if i==1 then b:SetPoint('TOPLEFT',4,-30) else b:SetPoint('LEFT',ui.cats[i-1],'RIGHT',2,0) end
+    b.value,b.title=c[1],c[2]
+    b:SetScript('OnClick',function(self) db.ui.category=self.value; requestUpdate() end)
+    ui.cats[i]=b
+  end
+  ui.summary=label(main,'GameFontHighlightSmall'); ui.summary:SetPoint('TOPLEFT',4,-56); ui.summary:SetPoint('RIGHT',-24,0)
+  local list=CreateFrame('Frame',nil,main); list:SetPoint('TOPLEFT',0,-76); list:SetPoint('BOTTOMRIGHT',0,22)
   ui.listBox=CreateFrame('Frame',nil,list); ui.listBox:SetAllPoints()
   ui.gridBox=CreateFrame('Frame',nil,list); ui.gridBox:SetAllPoints()
   ui.itemList=GV.makeList(ui.listBox,ITEM_ROW_H,GV.buildItemRow,GV.drawItemRow)
@@ -2971,6 +3066,7 @@ function GV.refreshItems()
   ui.sort:SetText('Sort: '..SORTS[db.ui.sort or 'name'])
   local term=(ui.search:GetText() or ''):lower()
   local list=g and GV.itemRows(db.ui.bank,db.ui.filter,term,db.ui.sort or 'name') or {}
+  list=GV.refreshCategories(list)
   ui.view.refresh()
   -- Needs read best as a list: each row says how many more the guild wants.
   local grid=db.ui.view~='list' and db.ui.filter~='needs'
@@ -2998,10 +3094,49 @@ function GV.refreshItems()
     empty='Waiting for this toon\'s contents.\n\nThey arrive when the toon, or a guildmate who has seen them, is online.'
   elseif #list==0 then
     empty=(term~='' and ('Nothing matches "'..term..'".'))
+      or (db.ui.category~='all' and 'Nothing in this category. Pick All to see everything.')
       or (db.ui.filter=='needs' and 'The guild hasn\'t listed any wanted items yet. Officers add them on the Guild tab, or Alt-click an item here.')
       or (withData==0 and 'Waiting for the bank toons\' contents.') or 'Empty.'
   end
   ui.itemsEmpty:SetText(empty)
+end
+
+-- Counts what each category tab holds, labels and sizes the tabs, and returns the picked category's items.
+function GV.categoryCounts(list)
+  local counts={all=#list}
+  for _,e in ipairs(list) do
+    e.category=GV.category(e.id,e.name)
+    counts[e.category]=(counts[e.category] or 0)+1
+  end
+  return counts
+end
+function GV.filterCategory(list,category)
+  if not category or category=='all' then return list end
+  local picked={}
+  for _,e in ipairs(list) do if (e.category or GV.category(e.id,e.name))==category then picked[#picked+1]=e end end
+  return picked
+end
+function GV.refreshCategories(list)
+  local counts=GV.categoryCounts(list)
+  local cats=ui.cats or {}
+  -- Counts go on the tabs when they fit the window; a narrow window gets the names alone.
+  local parent=cats[1] and cats[1]:GetParent()
+  local room=parent and parent:GetWidth() or 0
+  local function size(withCounts)
+    local total=0
+    for _,b in ipairs(cats) do
+      local n=counts[b.value] or 0
+      b:SetText(withCounts and (b.title..' '..(n>0 and '|cffb0b0b0' or '|cff606060')..n..'|r') or b.title)
+      local text=b:GetFontString()
+      local width=text and text:GetStringWidth() or 0
+      b:SetWidth(math.max(40,(width>0 and width or 56)+14))
+      total=total+(b:GetWidth() or 0)+2
+    end
+    return total
+  end
+  if size(true)>room-8 and room>0 then size(false) end
+  for _,b in ipairs(cats) do if b.value==db.ui.category then b:LockHighlight() else b:UnlockHighlight() end end
+  return GV.filterCategory(list,db.ui.category)
 end
 
 -- Request dialog ------------------------------------------------------------------------------------
@@ -4430,7 +4565,7 @@ for _,event in ipairs({'ADDON_LOADED','PLAYER_LOGIN','PLAYER_LOGOUT','PLAYER_GUI
   'PLAYER_INTERACTION_MANAGER_FRAME_SHOW','PLAYER_INTERACTION_MANAGER_FRAME_HIDE','GET_ITEM_INFO_RECEIVED','CHAT_MSG_ADDON',
   'MAIL_SHOW','MAIL_CLOSED','MAIL_SEND_SUCCESS','MAIL_FAILED','MAIL_INBOX_UPDATE','MAIL_SEND_INFO_UPDATE',
   'GUILDBANKFRAME_OPENED','GUILDBANKFRAME_CLOSED','GUILDBANKBAGSLOTS_CHANGED','GUILDBANK_UPDATE_MONEY','GUILDBANKLOG_UPDATE',
-  'ADDON_ACTION_BLOCKED','ADDON_ACTION_FORBIDDEN','PLAYER_REGEN_ENABLED'}) do
+  'ADDON_ACTION_BLOCKED','ADDON_ACTION_FORBIDDEN','PLAYER_REGEN_ENABLED','PLAYER_CAMPING'}) do
   pcall(frame.RegisterEvent,frame,event)
 end
 local function isBanker(kind)
@@ -4489,6 +4624,10 @@ frame:SetScript('OnEvent',function(_,event,...)
     local id=...
     if db and type(id)=='number' and not isSecret(id) and loadingItems[id] then loadingItems[id]=nil; GV.itemInfo(id) end
     requestUpdate()
+  elseif event=='PLAYER_CAMPING' then
+    -- Logging out: messages still waiting are saved and go out at the next login, but say so.
+    local waiting=GV.queued()
+    if waiting>0 then log('Still sending '..waiting..' message'..(waiting==1 and '' or 's')..' to the guild. Give it a few seconds before logging out; anything left goes out next time you log in.',true) end
   elseif event=='PLAYER_REGEN_ENABLED' then
     if GV.tagsAfterCombat then GV.tagsAfterCombat=false; GV.readTags() end
   elseif event=='ADDON_ACTION_BLOCKED' or event=='ADDON_ACTION_FORBIDDEN' then

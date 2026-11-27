@@ -13,6 +13,7 @@ Built for **WoW Forever**. Also works on **Classic Era** and **Retail**.
 ## See everything the guild has
 
 - **One window, every bank.** Bank toons and the public guild bank tabs down the side, items laid out like a bag with icons, quality borders and counts.
+- **Category tabs:** All, Materials, Patterns, Consumables, Gear, Crates, Containers and Other, each showing how many it holds.
 - **Totals across toons.** 5 Linen Cloth on one toon and 40 on another shows as 45; hover to see who has what.
 - **Always available.** The bank toons share their bags, bank and gold, and guildmates pass it along, so you can browse while they're offline.
 - **Forever's guild bank too.** Tabs the guild chooses to share show up alongside the bank toons. Tabs only higher ranks can see are never shared.

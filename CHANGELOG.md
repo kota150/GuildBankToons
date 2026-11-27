@@ -2,6 +2,15 @@
 
 All notable changes to Un-Ninja Bank (formerly Guild Bank Toons) are listed here.
 
+## [1.0.7] - 2026-11-20
+
+### Added
+- **Category tabs on the Bank tab:** All, Materials, Patterns, Consumables, Gear, Crates, Containers and Other, each with a count. Items are sorted by the game's item type; crates, lockboxes and satchels go under Crates. They work with search, the Bags / Bank / Needs filter and every bank toon. On a narrow window the tabs drop their counts to fit.
+- **Requests stay in step across the guild.** At login every guildmate compares a 7-day backlog (open and approved requests, and every request that changed in the last 7 days, whatever its status) with up to 3 guildmates, and swaps the whole backlog both ways when it differs. A bank toon that missed a request gets it, and a "mailed" it marked but logged out before sending reaches the guild at its next login (on it or an alt).
+- **Officers' copies are trusted.** A request an officer or the guild master passes on is accepted at any status. It still only moves forward.
+- Request changes are sent ahead of bank contents, and logging out with messages still waiting says so.
+- The message log (`/gbt log`) shows each step of catching up on requests at login: what was asked for, who answered and how many arrived, so a request that doesn't reach a bank toon can be traced.
+
 ## [1.0.6] - 2026-11-18
 
 ### Fixed

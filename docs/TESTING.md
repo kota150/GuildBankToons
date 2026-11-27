@@ -22,6 +22,7 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 
 - [ ] Guild tab → Bank toons: add the bank toon. The member sees it appear within a few seconds.
 - [ ] Log in on the bank toon, open its bank once, close it. The member's Bank tab fills in with the right items and gold.
+- [ ] Category tabs: each shows a count, and picking one (Patterns, Crates…) shows only those items, in Bag and List view, with search and Bags / Bank / Needs. Make the window as narrow as it goes: the tabs still fit (without counts).
 - [ ] Bag view: icons, quality borders and counts look right; hovering shows each toon's share. List view shows the same.
 - [ ] Log the bank toon out. A member who logs in afterwards still gets the contents (relayed by someone who saw them).
 
@@ -32,6 +33,7 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 - [ ] On the bank toon at a mailbox: the mail helper lists it; **Fill** addresses the mail and attaches exactly the right count. **Try a request for less than a full stack** (say 3 from a stack of 20): only 3 should be attached, split into a free bag slot first. With no free bag slot, the helper should say so instead. Sending marks it mailed everywhere and the mail shows in the Ledger as *Mailed out*.
 - [ ] As an officer, click an item and type a guild member's name in **For** (someone without the addon). A wrong name shows "There's no guild member called …" and greys out the button. With a real name, **Put in** makes it approved at once; the bank toon is told to mail it to that member, the member gets a whisper if online, and the mail helper addresses it to them. A non-officer doesn't see the For box.
 - [ ] Log the bank toon out, make a request, have someone make a second request once the bank toon is back, then `/reload` the bank toon: the first request shows up too.
+- [ ] On the bank toon, mail a request and log out straight away (in an inn). Have a guildmate check: it may still say approved. Log back in on the bank toon (or an alt): within a minute it says mailed for everyone.
 - [ ] As an officer, press **Mailed** on an approved request for a bank toon: it's marked mailed for everyone (on 1.0.6). A member doesn't see the button.
 - [ ] **Request gold** on the Bank tab: approve it, and check the mail helper puts the gold in the mail's money field.
 

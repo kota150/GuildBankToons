@@ -723,6 +723,52 @@ check('an officer can mark a bank toon\'s approved request mailed', GBT(officer)
 bus.run(5)
 check('everyone sees it mailed', req(m1,missed.id).status=='mailed' and req(bank,missed.id).status=='mailed' and req(m1,missed.id).actor=='Olivia Stone')
 check('members still cannot mark requests mailed', not GBT(m1).allowed(req(m1,latest(m2).id),'open','mailed','alice'))
+# --- Bank tab categories ---
+m1.L.execute('''
+CLASSES={[1001]=9,[1002]=15,[1003]=15,[1004]=1,[1005]=0,[1006]=2,[1007]=7,[1008]=4,[1009]=15,[2589]=7,[4306]=7}
+GetItemInfoInstant=function(id) return id,nil,nil,nil,nil,CLASSES[id],0 end
+''')
+m1.logout(); m1.login(); bus.run(20)  # the addon picks up GetItemInfoInstant as it loads, like the game
+cat=GBT(m1).category
+expect={1001:('Pattern: Red Linen Bag','patterns'),1002:('Heavy Supply Crate','crates'),1003:('Small Lockbox','crates'),
+  1004:('Linen Bag','containers'),1005:('Minor Healing Potion','consumables'),1006:('Worn Shortsword','gear'),
+  1007:('Silk Cloth','mats'),1008:('Thick Chestguard','gear'),1009:('Hearthstone','other')}
+wrong=[(n,cat(i,n)) for i,(n,c) in expect.items() if cat(i,n)!=c]
+check('items sort into categories by the game\'s item class'+(' '+str(wrong) if wrong else ''), not wrong)
+GBT(m1).itemInfo(1001)
+check('the item class is kept with the cached item name', m1.L.globals().GuildBankToonsDB['items'][1001].c==9 and m1.L.globals().GuildBankToonsDB['items'][1001].n is not None)
+rows=GBT(m1).itemRows(None,'all','','name')
+GBT(m1).categoryCounts(rows)
+mats=GBT(m1).filterCategory(rows,'mats')
+check('the Materials tab shows only materials', len(mats)>0 and all(e.category=='mats' for e in mats.values()))
+check('the All tab shows everything', len(GBT(m1).filterCategory(rows,'all'))==len(rows))
+# --- the bank toon logs out before its "mailed" goes out: it reaches the guild at its next login ---
+for c in bus.clients: c.mute=None
+r=GBT(m1).createRequest(4306,1,'quick logout','Vault Keeper'); bus.run(8)
+if req(bank,r.id).status=='open': GBT(officer).setRequestStatus(req(officer,r.id),'approved'); bus.run(8)
+bank.mute=lambda m: True                      # nothing it sends gets out
+GBT(bank).setRequestStatus(req(bank,r.id),'mailed'); bus.run(1)
+bank.logout(); bank.mute=None
+check('setup: the guild never heard it was mailed', req(m1,r.id).status=='approved' and req(officer,r.id).status=='approved')
+bank.login(); bus.run(40)
+check('the mailed status reaches the guild at the bank toon\'s next login', req(m1,r.id).status=='mailed' and req(officer,r.id).status=='mailed')
+# --- copies an officer passes on are taken at any status; a member's aren't ---
+def relay(c,status,actor,rid):
+    c.L.globals().GuildBankToons.queue('Q|Alice|%s|%d|%s|Vault Keeper|2589|1|%s|%s||relayed' % (rid,SERVER0+int(clock['t']),status,actor,actor),True)
+relay(evil,'mailed','Bob','alice-1793601000-111'); bus.run(5)
+check('a member\'s copy that breaks the rules is ignored', req(m1,'alice-1793601000-111') is None)
+relay(officer,'mailed','Bob','alice-1793601000-222'); bus.run(5)
+check('an officer\'s copy is taken at any status', req(m1,'alice-1793601000-222') is not None and req(m1,'alice-1793601000-222').status=='mailed')
+# --- the 7-day backlog: a closed request someone missed still reaches them ---
+m2.online=False
+r=GBT(m1).createRequest(2589,1,'backlog','Vault Keeper'); bus.run(8)
+if req(officer,r.id).status=='open': GBT(officer).setRequestStatus(req(officer,r.id),'approved'); bus.run(5)
+GBT(officer).setRequestStatus(req(officer,r.id),'denied'); bus.run(5)
+m2.online=True
+GBT(m1).createRequest(2589,1,'newer one','Vault Keeper'); bus.run(8)
+check('setup: Bob missed a request that is now closed', req(m2,r.id) is None)
+m2.logout(); m2.login(); bus.run(40)
+check('a closed request from the last 7 days reaches whoever missed it', req(m2,r.id) is not None and req(m2,r.id).status=='denied')
 # Forever blocks reading the guild info in combat: don't try then, read it once combat ends.
 tagged=lambda: m1.L.globals().GuildBankToonsDB.guilds["Verdant"].tagged
 m1.L.execute('InCombatLockdown=function() return true end'); m1.env.guildinfo='Bank stuff [GBT:Vault Keeper] [GBT:Spare Vault]'
