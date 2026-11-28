@@ -2,6 +2,13 @@
 
 All notable changes to Un-Ninja Bank (formerly Guild Bank Toons) are listed here.
 
+## [1.0.8] - 2026-11-28
+
+### Added
+- **Discord companion installer** for officers. On Windows, run *Un-Ninja Bank Companion Setup.exe* from the GitHub release: no Python needed, Start menu entries for making an invite code and opening the log, and it's removed in Settings → Apps. On a Mac or Linux, download `UnNinjaBank-Companion.zip` and double-click *Install on Mac.command* (or run `install-linux.sh`). Then paste an invite code. It finds WoW's saved file (or asks which account to read), runs the companion in the background and starts it at login. Running a newer installer updates it and keeps the settings; `--uninstall` removes it.
+- **Several officers can run the companion at once** and they all edit the same Discord messages. `guildbanktoons_discord.py --invite` posts a sync message, which lists which Discord message is which, and prints an invite code for the installer. An older save on one PC doesn't overwrite a newer one, a request never moves back a step, and a message two PCs post at the same moment is kept once.
+- The companion's `--watch` waits for WoW's saved file if it isn't there yet, and keeps going when Discord or the network is down. `--log FILE` writes its output to a file.
+
 ## [1.0.7] - 2026-11-20
 
 ### Added

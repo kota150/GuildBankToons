@@ -149,6 +149,19 @@ Any guildmate who runs the addon has a copy, so the script doesn't have to run o
    python3 companion/guildbanktoons_discord.py --watch
    ```
 
+**Several officers posting.** Each PC only sees what its own game saved, so it helps to have the companion running on a few officers' PCs: whoever reloads last updates Discord. They all edit the same messages:
+
+1. On the PC that's already set up, make an invite code:
+   ```bash
+   python3 companion/guildbanktoons_discord.py --invite
+   ```
+   This posts a small **sync message** in the channel, with a file attached that lists which Discord message is which bank, request and thank-you. Leave it there. Every companion reads it before posting and writes it back after, so nothing gets posted twice, and an older save on one PC doesn't overwrite a newer one. The code holds your webhook URLs, so send it privately.
+2. Each officer installs it from the [latest GitHub release](https://github.com/kota150/GuildBankToons/releases/latest) and pastes the code:
+   - **Windows:** download and run **Un-Ninja Bank Companion Setup.exe**. Nothing else is needed. Windows may say it "protected your PC", because the program isn't signed: click *More info* → *Run anyway*. It adds *Make an invite code* and *Companion log* to the Start menu, and it's removed like any program in Settings → Apps.
+   - **Mac or Linux** (or Windows with Python): download **UnNinjaBank-Companion.zip**, unzip it, and double-click *Install on Mac.command* (or run `install-linux.sh`, or *Install on Windows.bat*). This needs [Python 3.8+](https://www.python.org/downloads/).
+
+   The installer finds WoW's saved file (or asks which WoW account to read), runs the companion in the background, and starts it again at login. To update, they run a newer installer; it keeps their settings. `install.py --uninstall` removes it.
+
 **Goals on Discord.** One message per guild stays up to date with the bank's gold (with a two-week trend line), each gold goal as a progress bar, what the guild needs, and this week's top donors. Set `summary_webhook` to post it in a different channel, or `no_summary` to turn it off.
 
 **Donations on Discord.** When a bank toon receives a donation, the companion posts a thank-you ("🎁 Alice donated 20× Linen Cloth to Vault Keeper. Thank you!"). Set `donations_webhook` for a different channel, or `no_donations` to turn it off. The first run only takes note of donations already in the log, so it doesn't flood the channel.

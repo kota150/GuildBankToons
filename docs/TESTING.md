@@ -70,6 +70,7 @@ You need: the guild master (or an officer), one bank toon, and one ordinary memb
 
 - [ ] Export on the Bank and Ledger tabs: the text is selected; Ctrl+C copies it; it pastes cleanly into a spreadsheet as CSV.
 - [ ] On the PC running the companion, `/gbt companion` is on, and after a `/reload` the Discord channel gets the bank messages, the goals message, and a thank-you for the received donation.
+- [ ] `--invite` on that PC posts the sync message and prints a code. Install the companion on a second PC from the release zip with that code; after a `/reload` there, the same Discord messages are edited and no second copy appears.
 
 ## 9. Limits and busy times
 

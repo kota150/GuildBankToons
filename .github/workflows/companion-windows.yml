@@ -1,0 +1,54 @@
+# Builds "Un-Ninja Bank Companion Setup.exe": the Discord companion and its installer as one Windows program,
+# so officers don't need Python. On a version tag it's attached to that GitHub release; run it by hand
+# (Actions > Windows companion setup > Run workflow) to get a test build as a downloadable artifact.
+name: Windows companion setup
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the companion and the setup
+        shell: bash
+        run: |
+          python -m pip install --quiet pyinstaller
+          pyinstaller --noconfirm --onefile --console --name UnNinjaBankCompanion companion/guildbanktoons_discord.py
+          pyinstaller --noconfirm --onefile --console --name "Un-Ninja Bank Companion Setup" --paths companion \
+            --hidden-import guildbanktoons_discord --add-data "dist/UnNinjaBankCompanion.exe;." companion/install.py
+          ls -l dist
+
+      - name: Check that the companion runs
+        shell: bash
+        run: dist/UnNinjaBankCompanion.exe --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Un-Ninja Bank Companion Setup
+          path: dist/Un-Ninja Bank Companion Setup.exe
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The release is made by the packaging workflow; wait for it.
+          for i in $(seq 1 60); do
+            gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break
+            sleep 10
+          done
+          gh release upload "$GITHUB_REF_NAME" "dist/Un-Ninja Bank Companion Setup.exe" --clobber

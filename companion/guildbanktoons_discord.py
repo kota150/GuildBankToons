@@ -5,7 +5,9 @@ Reads the addon's SavedVariables (GuildBankToons.lua) file (written when you log
 message per guild bank character up to date through a webhook. New item requests get their own message
 (optionally pinging an officer role), updated when approved, mailed or denied, and approvals post a
 separate message that can ping whoever mails for the bank. Any guildmate running the addon has a
-copy of the bank, so anyone can run this, not just whoever plays the bank character.
+copy of the bank, so anyone can run this, not just whoever plays the bank character. Several officers can
+run it at once: with a sync message (`--invite` sets one up), every copy edits the same Discord messages
+instead of posting its own. install.py sets it up on another officer's PC from the invite code.
 
 It also thanks each donor once the bank toon receives their donation, keeps a Goals message up to date
 (gold with a two-week trend, each gold goal, the items the guild needs, and this week's top donors), and
@@ -17,12 +19,14 @@ Python 3.8+, standard library only.
     python3 guildbanktoons_discord.py                      # post or update once
     python3 guildbanktoons_discord.py --watch              # keep running, update after every logout/reload
     python3 guildbanktoons_discord.py --export exports     # write inventory.csv, ledger.csv and gold.csv
+    python3 guildbanktoons_discord.py --invite             # an invite code for install.py on another officer's PC
 
 Settings come from guildbanktoons.json next to this script (see guildbanktoons.example.json), overridden by
 command-line flags. The webhook URL can also come from the GUILDBANKTOONS_WEBHOOK environment variable.
 """
 
 import argparse
+import base64
 import csv
 import datetime
 import glob
@@ -34,10 +38,20 @@ import time
 import urllib.error
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+VERSION = "1.0.8"
+# Settings and state sit next to the script, or next to the .exe when it's built for Windows.
+HERE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 CONFIG_PATH = os.path.join(HERE, "guildbanktoons.json")
 STATE_PATH = os.path.join(HERE, ".guildbanktoons_state.json")
-USER_AGENT = "GuildBankToons-Companion (https://github.com/kota150, 1.0)"
+PID_PATH = os.path.join(HERE, ".guildbanktoons.pid")
+SYNC_FILE = "un-ninja-bank-sync.json"
+SYNC_TEXT = ("🔄 Un-Ninja Bank companion sync. Please leave this message here: the companions on officers' PCs keep "
+             "track of the bank's Discord messages in it, so they all edit the same ones.")
+INVITE_PREFIX = "UNB1:"
+# What an invite code carries: the Discord side only. Each PC finds its own WoW folder.
+INVITE_KEYS = ["webhook", "requests_webhook", "donations_webhook", "summary_webhook", "sync_webhook", "sync_message",
+               "guild", "link_base", "ping_role", "approval_ping", "no_requests", "no_donations", "no_summary"]
+USER_AGENT = f"GuildBankToons-Companion (https://github.com/kota150, {VERSION})"
 DEFAULT_WOW_DIRS = [
     "/Applications/World of Warcraft",
     "C:/Program Files (x86)/World of Warcraft",
@@ -300,6 +314,7 @@ def build_message(guild_name, snap, names, link_base, reserved=None, title=None)
 
 STATUS_TEXT = {"approved": "✅ Approved", "denied": "❌ Denied", "mailed": "📬 Mailed", "cancelled": "🚫 Cancelled"}
 FINAL = {"denied", "mailed", "cancelled"}
+STAGE = {"open": 0, "approved": 1, "mailed": 2, "denied": 2, "cancelled": 2}
 
 
 def short(name):
@@ -608,10 +623,23 @@ def export_csv(data, folder, guild_filter=None):
 
 # --- Discord webhook -------------------------------------------------------------------------------
 
-def request(method, url, payload=None):
-    data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
+def multipart(payload, filename, data):
+    """payload_json plus one file, the way Discord takes attachments."""
+    boundary = "unninjabank" + os.urandom(8).hex()
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\n'
+            f'Content-Type: application/json\r\n\r\n').encode() + json.dumps(payload).encode() + b"\r\n"
+    body += (f'--{boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="{filename}"\r\n'
+             f'Content-Type: application/json\r\n\r\n').encode() + data + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
+def request(method, url, payload=None, file=None):
+    if file:
+        data, ctype = multipart(payload, *file)
+    else:
+        data, ctype = (json.dumps(payload).encode() if payload is not None else None), "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": ctype, "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=20) as resp:
         body = resp.read()
         return json.loads(body) if body else {}
@@ -630,6 +658,93 @@ def publish(webhook, message_id, payload):
     return request("POST", f"{base}?wait=true", payload)["id"]
 
 
+def delete_message(webhook, message_id):
+    try:
+        request("DELETE", f"{webhook.split('?')[0].rstrip('/')}/messages/{message_id}")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+
+
+# --- Sharing the message list between officers' PCs ------------------------------------------------
+# Webhooks can only find messages they're given the ID of, so the PCs keep their state (which Discord message
+# is which bank, request or thank-you) as a file attached to one message, the sync message, which every invite
+# names. Each run reads it first and writes it back after posting.
+
+def sync_load(webhook, message_id):
+    """The shared state, {} if the message has none yet, or None if the message is gone."""
+    base = webhook.split("?")[0].rstrip("/")
+    try:
+        msg = request("GET", f"{base}/messages/{message_id}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    for att in msg.get("attachments") or []:
+        if att.get("filename") == SYNC_FILE:
+            req = urllib.request.Request(att["url"], headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read() or b"{}")
+    return {}
+
+
+def sync_save(webhook, message_id, state):
+    """Replaces the sync message's file (or posts a new sync message); returns its ID."""
+    base = webhook.split("?")[0].rstrip("/")
+    data = json.dumps(state, separators=(",", ":")).encode()
+    payload = {"content": SYNC_TEXT, "attachments": [{"id": 0, "filename": SYNC_FILE}], "allowed_mentions": {"parse": []}}
+    if message_id:
+        try:
+            request("PATCH", f"{base}/messages/{message_id}", payload, (SYNC_FILE, data))
+            return message_id
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+    payload.update(username="Guild Bank", flags=4096)  # 4096: post without a notification
+    return request("POST", f"{base}?wait=true", payload, (SYNC_FILE, data))["id"]
+
+
+def get_path(state, key):
+    for part in key[:-1]:
+        state = (state or {}).get(part) or {}
+    return (state or {}).get(key[-1])
+
+
+def set_path(state, key, value):
+    for part in key[:-1]:
+        state = state.setdefault(part, {})
+    state[key[-1]] = value
+
+
+def message_of(entry):
+    return entry.get("message") if isinstance(entry, dict) else entry
+
+
+def merge_state(remote, ours, touched):
+    """Puts what this run posted (touched: key -> (posted a new message?, webhook, the message it had before)) into
+    the latest shared state. If another PC posted the same thing in the meantime, theirs is kept and ours is
+    returned to delete."""
+    out = json.loads(json.dumps(remote or {}))
+    duplicates = []
+    for key, (created, webhook, before) in touched.items():
+        mine, theirs = get_path(ours, key), get_path(out, key)
+        if created and message_of(theirs) not in (None, before, message_of(mine)):
+            if message_of(mine):
+                duplicates.append((webhook, message_of(mine)))
+            continue
+        set_path(out, key, mine)
+    # Requests closed for three months won't change again.
+    cutoff = time.time() - 90 * 86400
+    requests = out.get("requests") or {}
+    for request_id in [r for r, e in requests.items() if e.get("status") in FINAL and (e.get("updated") or 0) < cutoff]:
+        del requests[request_id]
+    return out, duplicates
+
+
+def sync_webhook(args):
+    return args.sync_webhook or args.webhook
+
+
 def load_json(path, default):
     try:
         with open(path, encoding="utf-8") as f:
@@ -638,19 +753,57 @@ def load_json(path, default):
         return default
 
 
-def run_once(args, state):
+def locate(args):
+    """The SavedVariables file to read, or None if there isn't one yet."""
     path = args.savedvars or (find_saved_variables(args.wow_dir, args.account) or [None])[0]
-    if not path or not os.path.exists(path):
-        # Say exactly what was tried, and whether the settings file was read at all.
-        settings = (f"Settings read from {CONFIG_PATH}." if os.path.exists(CONFIG_PATH)
-                    else f"No settings file at {CONFIG_PATH} (copy guildbanktoons.example.json to that name).")
-        if args.savedvars:
-            tried = f"There's no file at the savedvars path:\n  {args.savedvars}"
-        else:
-            dirs = [args.wow_dir] if args.wow_dir else DEFAULT_WOW_DIRS
-            tried = "Looked for _forever_/WTF/Account/*/SavedVariables/GuildBankToons.lua (or _classic_era_) under:\n  " + "\n  ".join(dirs)
-        sys.exit(f"Couldn't find GuildBankToons.lua.\n{tried}\n{settings}\nSet \"savedvars\" to the file's full path, or pass --savedvars.")
+    return path if path and os.path.exists(path) else None
+
+
+def missing_message(args):
+    # Say exactly what was tried, and whether the settings file was read at all.
+    settings = (f"Settings read from {CONFIG_PATH}." if os.path.exists(CONFIG_PATH)
+                else f"No settings file at {CONFIG_PATH} (copy guildbanktoons.example.json to that name).")
+    if args.savedvars:
+        tried = f"There's no file at the savedvars path:\n  {args.savedvars}"
+    else:
+        dirs = [args.wow_dir] if args.wow_dir else DEFAULT_WOW_DIRS
+        tried = "Looked for _forever_/WTF/Account/*/SavedVariables/GuildBankToons.lua (or _classic_era_) under:\n  " + "\n  ".join(dirs)
+    return (f"Couldn't find GuildBankToons.lua.\n{tried}\n{settings}\nSet \"savedvars\" to the file's full path, or pass "
+            "--savedvars. (WoW writes the file the first time you log out or /reload with the addon on.)")
+
+
+def freshness(guild):
+    """The newest time in this PC's copy of the guild, so an older copy doesn't overwrite a newer one's message."""
+    stamps = [int((b or {}).get("stamp") or 0) for b in (guild.get("banks") or {}).values()]
+    stamps += [int((d or {}).get("created") or 0) for d in (guild.get("donations") or {}).values()]
+    stamps += [int((r or {}).get("updated") or 0) for r in (guild.get("requests") or {}).values()]
+    return max(stamps, default=0)
+
+
+def run_once(args, state, path=None):
+    path = path or locate(args)
+    if not path:
+        sys.exit(missing_message(args))
     data = load_saved_variables(path).get("GuildBankToonsDB") or {}
+    # A dry run works from this PC's own list, so it never needs Discord (the installer uses it as a check).
+    synced = bool(args.sync_message) and not args.export_only and not args.dry_run
+    if synced:
+        remote = sync_load(sync_webhook(args), args.sync_message)
+        if remote is None:
+            print("The sync message is gone from Discord, so this PC can't tell which messages the others posted. "
+                  "Run --invite on one PC and reinstall the others with the new code. Posting from this PC's own list "
+                  "until then.", file=sys.stderr)
+            synced = False
+        else:
+            state.clear()
+            state.update(remote)
+    touched = {}  # state key -> (posted a new message?, webhook, previous message) for everything this run changed
+
+    def post(key, webhook, message_id, payload):
+        new = publish(webhook, message_id, payload)
+        touched[key] = (new != message_id, webhook, message_id)
+        return new
+
     names = data.get("items") or {}
     changed = 0
     for guild_name, guild in (data.get("guilds") or {}).items():
@@ -669,11 +822,13 @@ def run_once(args, state):
             if (not args.force and seen.get("stamp") == snap.get("stamp") and seen.get("hash") == snap.get("hash")
                     and seen.get("reserved", {}) == held and seen.get("title", title) == title):
                 continue
+            if not args.force and int(snap.get("stamp") or 0) < int(seen.get("stamp") or 0):
+                continue  # another PC already posted a newer copy
             payload = build_message(guild_name, snap, names, args.link_base, reserved.get(bank_id), title)
             if args.dry_run:
                 print(json.dumps(payload, indent=2, ensure_ascii=False))
                 continue
-            seen["message"] = publish(args.webhook, seen.get("message"), payload)
+            seen["message"] = post((slot,), args.webhook, seen.get("message"), payload)
             seen["stamp"], seen["hash"], seen["reserved"], seen["title"] = snap.get("stamp"), snap.get("hash"), held, title
             changed += 1
             print(f"Updated Discord for {snap.get('owner')} ({guild_name}).")
@@ -683,12 +838,14 @@ def run_once(args, state):
             seen = state.setdefault(slot, {})
             payload = build_summary_message(guild_name, guild, names)
             fingerprint = json.dumps(payload, sort_keys=True)
-            if args.force or seen.get("fingerprint") != fingerprint:
+            fresh = freshness(guild)
+            if args.force or (seen.get("fingerprint") != fingerprint and fresh >= int(seen.get("fresh") or 0)):
                 if args.dry_run:
                     print(json.dumps(payload, indent=2, ensure_ascii=False))
                 else:
-                    seen["message"] = publish(args.summary_webhook or args.webhook, seen.get("message"), payload)
-                    seen["fingerprint"] = fingerprint
+                    hook = args.summary_webhook or args.webhook
+                    seen["message"] = post((slot,), hook, seen.get("message"), payload)
+                    seen["fingerprint"], seen["fresh"] = fingerprint, fresh
                     changed += 1
                     print(f"Updated the goals message for {guild_name}.")
                     time.sleep(1)
@@ -703,12 +860,13 @@ def run_once(args, state):
                     continue
                 if first_run and not args.force:
                     thanked[donation_id] = None
+                    touched[("donations", donation_id)] = (False, None, None)
                     continue
                 payload = build_donation_message(donation, names)
                 if args.dry_run:
                     print(json.dumps(payload, indent=2, ensure_ascii=False))
                     continue
-                thanked[donation_id] = publish(args.donations_webhook or args.webhook, None, payload)
+                thanked[donation_id] = post(("donations", donation_id), args.donations_webhook or args.webhook, None, payload)
                 changed += 1
                 print(f"Thanked {donation.get('by')} for a donation to {donation.get('bank')}.")
                 time.sleep(1)
@@ -721,6 +879,10 @@ def run_once(args, state):
             # Finished before this PC ever saw it: nothing to ping about.
             if not args.force and ((seen is None and status in FINAL) or (seen and seen.get("status") == status)):
                 continue
+            # Another PC already posted a later step (requests only move forward).
+            if not args.force and seen and (STAGE.get(status, 0) < STAGE.get(seen.get("status"), 0)
+                                            or int(req.get("updated") or 0) < int(seen.get("updated") or 0)):
+                continue
             webhook = args.requests_webhook or args.webhook
             payloads = [build_request_message(req, names, args.link_base, args.ping_role)]
             if status == "approved":
@@ -729,7 +891,7 @@ def run_once(args, state):
                 for payload in payloads:
                     print(json.dumps(payload, indent=2, ensure_ascii=False))
                 continue
-            message = publish(webhook, seen and seen.get("message"), payloads[0])
+            message = post(("requests", request_id), webhook, seen and seen.get("message"), payloads[0])
             if status == "approved":
                 publish(webhook, None, payloads[1])
             posted[request_id] = {"message": message, "status": status, "updated": req.get("updated")}
@@ -740,12 +902,77 @@ def run_once(args, state):
         for written in export_csv(data, args.export, args.guild):
             print(f"Wrote {written}")
     if not args.dry_run and not args.export_only:
+        if synced and touched:
+            merged, duplicates = merge_state(sync_load(sync_webhook(args), args.sync_message) or {}, state, touched)
+            for webhook, message_id in duplicates:
+                delete_message(webhook, message_id)
+                print("Another PC posted the same message at the same moment; removed this PC's copy.")
+            state.clear()
+            state.update(merged)
+            sync_save(sync_webhook(args), args.sync_message, state)
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
     return path, changed
 
 
+def invite_code(settings):
+    """A code that sets up another officer's companion: the webhooks and Discord settings, base64-encoded."""
+    shared = {k: settings[k] for k in INVITE_KEYS if settings.get(k)}
+    return INVITE_PREFIX + base64.urlsafe_b64encode(json.dumps(shared, separators=(",", ":")).encode()).decode().rstrip("=")
+
+
+def read_invite(code):
+    code = re.sub(r"\s", "", code or "")
+    if not code.startswith(INVITE_PREFIX):
+        raise ValueError("That isn't an Un-Ninja Bank invite code (they start with UNB1:).")
+    body = code[len(INVITE_PREFIX):]
+    try:
+        settings = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+    except ValueError:
+        raise ValueError("That invite code is cut off or mistyped; copy the whole thing again.")
+    if not isinstance(settings, dict) or not settings.get("webhook"):
+        raise ValueError("That invite code has no webhook in it.")
+    return {k: v for k, v in settings.items() if k in INVITE_KEYS}
+
+
+def make_invite(args):
+    """Sets up the sync message if there isn't one, saves its ID in the settings file, and prints the invite code."""
+    state = load_json(STATE_PATH, {})
+    hook = sync_webhook(args)
+    if args.sync_message and sync_load(hook, args.sync_message) is not None:
+        print(f"Using the sync message that's already set up ({args.sync_message}).")
+    else:
+        args.sync_message = sync_save(hook, None, state)
+        config = load_json(CONFIG_PATH, {})
+        config["sync_message"] = args.sync_message
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        print(f"Posted the sync message in Discord ({args.sync_message}) and saved it in {CONFIG_PATH}.")
+        print("Leave that message there; deleting it makes every PC start over.")
+    print()
+    print(invite_code(vars(args)))
+    print()
+    print("Give that code to officers who'll run the companion; they paste it into the installer. It holds your webhook")
+    print("URLs, so send it privately (a DM or an officer-only channel): anyone with it can post as the bank.")
+
+
+def open_log(path):
+    """Sends output to a file (for runs in the background, with no window), keeping it under about a megabyte."""
+    try:
+        if os.path.getsize(path) > 1_000_000:
+            os.replace(path, path + ".old")
+    except OSError:
+        pass
+    log = open(path, "a", encoding="utf-8", buffering=1)
+    sys.stdout = sys.stderr = log
+    print(f"--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S} started")
+
+
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        # Windows consoles and pipes default to a code page without emoji.
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     config = load_json(CONFIG_PATH, {})
     p = argparse.ArgumentParser(description="Post Un-Ninja Bank contents to Discord.")
     p.add_argument("--webhook", default=os.environ.get("GUILDBANKTOONS_WEBHOOK") or config.get("webhook"))
@@ -772,6 +999,12 @@ def main():
                    help="don't post the goals message")
     p.add_argument("--export", metavar="FOLDER", default=config.get("export"),
                    help="also write inventory.csv, ledger.csv and gold.csv to this folder after every update")
+    p.add_argument("--sync-webhook", default=config.get("sync_webhook"),
+                   help="webhook (channel) for the sync message; defaults to --webhook")
+    p.add_argument("--sync-message", default=config.get("sync_message"),
+                   help="ID of the sync message that lets several PCs share the same Discord messages")
+    p.add_argument("--invite", action="store_true", help="print an invite code for install.py on another officer's PC")
+    p.add_argument("--log", metavar="FILE", help="write output to this file instead of the screen")
     p.add_argument("--watch", action="store_true", help="keep running and update after every save")
     p.add_argument("--interval", type=int, default=config.get("interval", 15), help="seconds between checks")
     p.add_argument("--dry-run", action="store_true", help="print the messages instead of posting")
@@ -785,22 +1018,40 @@ def main():
     if not args.webhook and not args.dry_run:
         sys.exit("No webhook URL. Set it in guildbanktoons.json, GUILDBANKTOONS_WEBHOOK, or --webhook.")
 
+    if args.log:
+        open_log(args.log)
+    if args.invite:
+        return make_invite(args)
+
     state = load_json(STATE_PATH, {})
-    path, _ = run_once(args, state)
+    path = locate(args)
     if not args.watch:
+        run_once(args, state, path)
         return
+    with open(PID_PATH, "w") as f:
+        f.write(str(os.getpid()))
+    if not path:
+        print(missing_message(args) + "\nWaiting for it to show up.", file=sys.stderr)
+        while not path:
+            time.sleep(args.interval)
+            path = locate(args)
     print(f"Watching {path} (Ctrl-C to stop).")
-    last = os.path.getmtime(path)
+    last = None
     while True:
-        time.sleep(args.interval)
+        if not args.sync_message:
+            # An invite code made while this runs: start sharing without a restart.
+            args.sync_message = load_json(CONFIG_PATH, {}).get("sync_message")
         try:
             mtime = os.path.getmtime(path)
             if mtime != last:
-                time.sleep(2)  # let WoW finish writing the file
+                if last is not None:
+                    time.sleep(2)  # let WoW finish writing the file
+                run_once(args, state, path)
                 last = mtime
-                run_once(args, state)
         except (OSError, ValueError, urllib.error.URLError) as e:
+            # Offline or Discord busy: try again on the next check.
             print(f"Skipped an update: {e}", file=sys.stderr)
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":

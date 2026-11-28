@@ -23,3 +23,15 @@ jobs:
           fetch-depth: 0
 
       - uses: BigWigsMods/packager@v2
+
+      # The Discord companion and its installer, as a second download on the GitHub release (not on CurseForge).
+      - name: Attach the Discord companion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "UnNinjaBank-Companion"
+          cp companion/guildbanktoons_discord.py companion/install.py companion/guildbanktoons.example.json \
+             "companion/Install on Windows.bat" "companion/Install on Mac.command" companion/install-linux.sh \
+             companion/README.txt UnNinjaBank-Companion/
+          zip -r UnNinjaBank-Companion.zip UnNinjaBank-Companion
+          gh release upload "$GITHUB_REF_NAME" UnNinjaBank-Companion.zip --clobber
